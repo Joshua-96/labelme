@@ -2,7 +2,6 @@
 /.pytest_cache/
 
 /build/
-/dist/
 /*.egg-info/
 
 *.py[cdo]
@@ -22,3 +21,5 @@ sampleImages/test.png
 sampleImages/th_barbara_16.json
 sampleImages/th_barbara_16.png
 sampleImages/th_barbara.png
+dist/*
+output_time.txt
