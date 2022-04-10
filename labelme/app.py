@@ -5,8 +5,10 @@ from math import ceil, floor
 import os
 import os.path as osp
 import re
+import gc
 from webbrowser import open as wb_open
 import sys
+import PyQt5
 import cv2
 import numpy as np
 from glob import glob
@@ -135,12 +137,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.plotLim_low = 1
 
-        self.plotLim_high = 99
+        self.plotLim_high = 99.5
 
         self.SetSmoothnessDialog = None
 
         self.AxisLimitDialog = None
 
+        self.z_scale = 511
+
+        self.init_render_Camera_params = {"elevation": 30.0,
+                                          "distance": 2500,
+                                          "fov": 60,
+                                          "center": QtGui.QVector3D(2500, 0, 0),
+                                          "azimuth" : 20,
+                                          "rotation": QtGui.QQuaternion(1.0, 0.0, 0.0, 0.0)
+                                          }
+        
+        self.temp_rendered_shape = None
         assert self._config["init_zoom_mode"] in \
             ["FIT_WINDOW", "FIT_WIDTH", "MANUAL_ZOOM", None], \
             "specify ZoomMode as 'FIT_WINDOW','FIT_WIDTH' or 'MANUAL_ZOOM'"
@@ -290,9 +303,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.render_dock = QtWidgets.QDockWidget(self.tr(u"3d render"), self)
         self.render_dock.setObjectName(u"render")
         self.renderWidget = cust_GLViewWidget()
-        self.renderWidget.setCameraPosition(distance=200)
-        self.renderWidget.setCameraParams(elevation=-1000)
+        # self.renderWidget.setCameraPosition(distance=200)
+        # self.renderWidget.setCameraParams(elevation=-1000)
         self.renderWidget.addItem(render_3d.draw_grid(1000))
+        # self.worker.run_render.connect(self.renderWidget.addItem)
         self.render_dock.setWidget(self.renderWidget)
 
         self.zoomWidget = ZoomWidget()
@@ -1889,14 +1903,34 @@ class MainWindow(QtWidgets.QMainWindow):
         
         
         # removing 0 edges in array
-        self.normalized_img = self.image_as_array[:, ~np.all(self.image_as_array == 0, axis=0)]
-        self.normalized_img = self.normalized_img[~np.all(self.normalized_img == 0, axis=1)]
+        thresh_for_clipping = self.image_as_array.size / 500
+        unique_vals, unique_count = np.unique(self.image_as_array, return_counts = True)
+        cum_unique_count = unique_count[1:].cumsum() # accumulate from values > 0 since you want to ignore 0
+        self.above_thresh = unique_vals[1:][cum_unique_count > thresh_for_clipping][0] # get the first significant value
+        if self.above_thresh == 0:
+            self.above_thresh = unique_vals[unique_count > thresh_for_clipping][1]
+        valid_img = self.image_as_array
+        # Set all non significant values to 0 
+        valid_img[valid_img < self.above_thresh] = 0 # set all non-significant values to 0
+        img_not_zero = self.image_as_array.nonzero()
+        # get offset between 2d and 3d view
+        self.render_offset = np.array([img_not_zero[0].min(), img_not_zero[1].min()])
+        
+        # crop all-zero rows and columns
+
+        valid_img = valid_img[img_not_zero[0].min():img_not_zero[0].max(),
+                              img_not_zero[1].min():img_not_zero[1].max()]
+
         self.is_8_bit = True if image.depth() != 16 else False
         if self.is_8_bit:
-            self.normalized_img = self.normalized_img / self.normalized_img.max()
+            self.normalized_img = valid_img / (valid_img.max() - valid_img.min()) + valid_img.min()
+            self.above_thresh = self.above_thresh / (valid_img.max() - valid_img.min()) + valid_img.min()
         else:
-            self.normalized_img = (self.normalized_img / self.normalized_img.max() * (2**16-1)).astype("uint16")
+            self.normalized_img = (valid_img - valid_img.min()) / (valid_img.max() - valid_img.min())
+            self.above_thresh = self.above_thresh / (valid_img.max() - valid_img.min()) + valid_img.min()
         #FIXME some normalization procedure
+        
+        self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
         
         self.update3d_view()
 
@@ -2047,10 +2081,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 cur_p = p + sample * norm_p
                 points[accum_cnt + sample] = (cur_p[1],
                                               cur_p[0],
-                                              self.image_as_array[
-                                                  int(cur_p[1]),
-                                                  int(cur_p[0])] / 8
+                                              self.cached_image[
+                                                  int(cur_p[1]) - self.render_offset[0],
+                                                  int(cur_p[0]) - self.render_offset[1]]
                                               )
+        points[:, :2] = points[:, :2] - self.render_offset
         return points
 
 
@@ -2089,11 +2124,17 @@ class MainWindow(QtWidgets.QMainWindow):
         hor_points = np.zeros((20, 3))
         for i, offset in enumerate(range(-10, 10)):
             try:
-                vert_points[i] = pos.y(), pos.x() + offset, self.image_as_array[int(pos.y()), int(pos.x()) + offset] / 8 + 2
-                hor_points[i] = pos.y() + offset, pos.x(), self.image_as_array[int(pos.y()) + offset, int(pos.x())] / 8 + 2
+                vert_points[i] = pos.y(), pos.x() + offset,\
+                    self.cached_image[int(pos.y() - self.render_offset[0]),
+                                      int(pos.x() - self.render_offset[1]) + offset] + 2
+                hor_points[i] = pos.y() + offset, pos.x(),\
+                    self.cached_image[int(pos.y() - self.render_offset[0]) + offset,
+                                      int(pos.x()-self.render_offset[1])] + 2
             except IndexError:
                 vert_points[i] = pos.y(), pos.x() + offset, 0
                 hor_points[i] = pos.y() + offset, pos.x(), 0
+        vert_points[:, :2] = vert_points[:,:2] - self.render_offset
+        hor_points[:, :2] = hor_points[:,:2] - self.render_offset 
         self.vert_crosshair = pg.opengl.GLLinePlotItem(
             pos=vert_points,
             color=self.crosshair_color,
@@ -2107,12 +2148,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.renderWidget.addItem(self.vert_crosshair)
         self.renderWidget.addItem(self.hor_crosshair)
 
-    def updateChart(self, arr=None, span=None, y_level=None):
+    def updateChart(self, y_level=None):
         maxScrollValue = self.scrollBars[Qt.Horizontal].maximum()
         horizontalOffset = maxScrollValue - self.scrollBars[Qt.Horizontal].value()
         fitWidthZoom = self.scaleFitWidth()
+        currentZoom = self.zoomWidget.value()
+        effectiveZoom = currentZoom / (100 * fitWidthZoom)
+        span = self.image_as_array.shape[1]
         if span is not None:
-            self.span = int(span * fitWidthZoom)
+            span = int(span / effectiveZoom)
             if maxScrollValue > 0:
                 mid = int(span / 2) + int((self.canvas.pixmap.width() - span) *
                                             (1 - (horizontalOffset / maxScrollValue)))
@@ -2121,11 +2165,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.end = mid + int(span / 2)
             self.start = mid - int(span / 2)
         percent_min = np.percentile(self.normalized_img, self.plotLim_low)
-        percent_max = np.percentile(self.normalized_img, self.plotLim_high)
+
+        self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
         if y_level is not None:
             self.y_level = y_level
-        line = self.normalized_img[self.y_level, self.start:self.end]
-        self.chart_widget.update_plot([percent_min, percent_max], line, start=self.start)
+        line = self.normalized_img[self.y_level - self.render_offset[0], self.start:self.end]
+        self.chart_widget.update_plot([max(percent_min, self.above_thresh/self.normalized_img.max()), self.percent_max], line, start=self.start)
 
     def adjustScale(self, initial=False):
         # TODO set the default zoom setting in config instead
@@ -2249,8 +2294,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filename = filename
 
         if self.filename and load:
+            gc.collect()
             self.loadFile(self.filename)
-
+            
         self._config["keep_prev"] = keep_prev
 
     def openFile(self, _value=False):
@@ -2278,14 +2324,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.loadFile(fileName)
 
     def update3d_view(self):
-        self.cached_image = self.image_as_array / 8
-        # self.cached_image = self.cached_image[~np.all(self.cached_image == 0, axis=1)]
-        # self.cached_image = self.cached_image[:, ~np.all(self.cached_image == 0, axis=0)]
-
-        # remove the current Plot before drawing a new one
+        # setting value range for potential height plot
+        # tempImg = np.clip(self.normalized_img, self.above_thresh, self.percent_max)
+        # self.cached_image = 1 * (tempImg - tempImg.mean()) / self.above_thresh
+        self.cached_image = self.normalized_img * self.z_scale
         if self.curPlot is not None:
-            self.renderWidget.removeItem(self.curPlot)
-        self.curPlot = render_3d.draw_SurfacePlot(self.cached_image)
+            self.curPlot.setData(z=self.cached_image)
+        else:
+            self.curPlot = render_3d.draw_SurfacePlot(self.cached_image)
+
+
         self.renderWidget.addItem(self.curPlot)
 
     def changeOutputDirDialog(self, _value=False):
@@ -2317,9 +2365,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # files_in_output_dir = list(self.output_dir.glob("**/*" + LabelFile.suffix))
         # if a output directory is given, don't look for label files in the input dir
-        self.importDirImages(self.lastOpenDir, load=False,omit_label_files=True)
+        self.importDirImages(self.lastOpenDir,
+                             load=False,
+                             omit_label_files=True)
         current_filename = self.filename
-            
+
 
         if current_filename in self.imageList:
             # retain currently selected file

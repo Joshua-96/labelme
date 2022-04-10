@@ -20,15 +20,18 @@ class render_3d(gl.GLViewWidget):
             self.preproc_img()
 
 
-def draw_SurfacePlot(z_vals):
-    
+def draw_SurfacePlot(z_vals, z_scale=1):
+    # z_vals = z_vals.astype(np.uint8)
+    # possible shader
+    # balloon,viewNormalColor, shaded, edgeHilight, heightColor, normalColor
+
     Plot = gl.GLSurfacePlotItem(z=z_vals,
-                        shader='shaded',
+                        shader='normalColor',
                         computeNormals=True,
                         glOptions='opaque',
                         smooth=True,
                         )
-    Plot.scale(1, 1, 1)
+    Plot.scale(1, 1, z_scale)
     Plot.translate(0, 0, 0)
     return Plot
 
