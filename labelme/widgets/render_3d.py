@@ -15,19 +15,25 @@ class render_3d(gl.GLViewWidget):
         glBlendFunc = gl.shaders.glBlendFunc
         GL_SRC_ALPHA = gl.shaders.GL_SRC_ALPHA
         GL_ONE_MINUS_SRC_ALPHA = gl.shaders.GL_ONE_MINUS_SRC_ALPHA
+        gl.shaders.glEnable(GL_CULL_FACE)
+        #gl.shaders.glDisable(GL_CULL_FACE)
         self.image = image
         if not image is None:
             self.preproc_img()
 
 
-def draw_SurfacePlot(z_vals, z_scale=1):
+def draw_SurfacePlot(z_vals, z_scale=1, shader="shaded"):
     # z_vals = z_vals.astype(np.uint8)
     # possible shader
     # balloon,viewNormalColor, shaded, edgeHilight, heightColor, normalColor
 
+    if shader == "heightColor":
+        computeNormals = False
+    else:
+        computeNormals = True
     Plot = gl.GLSurfacePlotItem(z=z_vals,
-                        shader='normalColor',
-                        computeNormals=True,
+                        shader=shader,
+                        computeNormals=computeNormals,
                         glOptions='opaque',
                         smooth=True,
                         )

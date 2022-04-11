@@ -8,6 +8,7 @@ import re
 import gc
 from webbrowser import open as wb_open
 import sys
+import PIL
 import PyQt5
 import cv2
 import numpy as np
@@ -17,7 +18,7 @@ import pyqtgraph.opengl as gl
 import numpy as np
 from PyQt5.QtCore import QSize
 from PyQt5.QtGui import QColor, QFont, qRgb
-from PyQt5.QtWidgets import QPushButton, QWidget  # ,QWhatsThis
+from PyQt5.QtWidgets import QPushButton, QWidget,QMessageBox  # ,QWhatsThis
 from ruamel import yaml
 import pathlib as pl
 dev_path = os.getcwd()
@@ -143,7 +144,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.AxisLimitDialog = None
 
+        self.brightnessContrastDialog = None
+
         self.z_scale = 511
+
+        self.shader_options = {
+            "shaded": "Surface is colored grey",
+            "normalColor": "Surface is colored according to the Orientation " +
+                           "of the Faces-normals",
+            "viewNormalColor": "Surface Color changes depending on the " +
+                               "viewing Angle",
+            "HeightMap": "Surface Color is changed depending " +
+                         "on the Height Value normals are not " +
+                         "calculated, thus this Option accelerates rendering"}
+
+        ["shaded", "normalColor", "viewNormalColor", "heightColor"]
+
+        self.default_shader_name = "shaded"
+
+        self.renderOptionsDialog = None
+
+
 
         self.init_render_Camera_params = {"elevation": 30.0,
                                           "distance": 2500,
@@ -748,12 +769,20 @@ class MainWindow(QtWidgets.QMainWindow):
             enabled=True,
         )
 
-        setAxisLimits_lower = action(
-            "& lower Axis Limit",
-            self.setAxisLimit_lower,
-            self.tr("sets lower Axis Limit for Plot Widget"),
+        setAxisLimits = action(
+            "& Axis Limit",
+            self.setAxisLimit,
+            self.tr("Axis Limit for Plot Widget"),
             enabled=True,
         )
+
+        setShader = action(
+            "& set Shader",
+            self.setShader,
+            self.tr("change the appearence of the 3d render"),
+            enabled=True,
+        )
+
         # Group zoom controls into a list for easier toggling.
         zoomActions = (
             self.zoomWidget,
@@ -953,7 +982,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 saveWithImageData,
                 setSnappingDistance,
                 setTraceSmoothness,
-                setAxisLimits_lower,
+                setAxisLimits,
+                setShader,
             ),
         )
         # Custom context menu for the canvas widget:
@@ -1718,25 +1748,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.loadFlags(flags)
 
     def brightnessContrast(self, value):
-        dialog = BrightnessContrastDialog(
-            utils.img_data_to_pil(self.imageData),
-            self.onNewBrightnessContrast,
-            parent=self,
-        )
+        
+        if self.brightnessContrastDialog is None:
+            self.brightnessContrastDialog = BrightnessContrastDialog(
+                utils.img_data_to_pil(self.imageData),
+                self.onNewBrightnessContrast,
+                parent=self,
+                )
         brightness, contrast = self.brightnessContrast_values.get(
             self.filename, (None, None)
         )
         if brightness is not None:
-            dialog.slider_brightness.setValue(brightness)
+            self.brightnessContrastDialog.slider_brightness.setValue(brightness)
         if contrast is not None:
-            dialog.slider_contrast.setValue(contrast)
-        dialog.exec_()
+            self.brightnessContrastDialog.slider_contrast.setValue(contrast)
+        self.brightnessContrastDialog.exec_()
 
-        brightness = dialog.slider_brightness.value()
-        contrast = dialog.slider_contrast.value()
+        brightness = self.brightnessContrastDialog.slider_brightness.value()
+        contrast = self.brightnessContrastDialog.slider_contrast.value()
         self.brightnessContrast_values[self.filename] = (brightness, contrast)
-        self.global_sobel_filter_enabled = dialog.apply_sobel_filter_checkbox.isChecked()
-        self.global_sobel_filter_settings  = [dialog.kernelSize.value(), dialog.derivative.value(), dialog.clip_level.value()] 
+        self.global_sobel_filter_enabled = self.brightnessContrastDialog.apply_sobel_filter_checkbox.isChecked()
+        self.global_sobel_filter_settings = [self.brightnessContrastDialog.kernelSize.value(),
+                                             self.brightnessContrastDialog.derivative.value(),  
+                                             self.brightnessContrastDialog.clip_level.value()] 
 
     def setSnappingDistance(self):
         dialog = genericValueDialog.editVariablesDialog(
@@ -1775,31 +1809,52 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.trace_smothness = self.SetSmoothnessDialog.values[0]
         self._config["shape"]["trace"]["smothness"] = self.SetSmoothnessDialog.values[0]
 
-    def setAxisLimit_lower(self):
-        if self.AxisLimitDialog is None:
+    def setAxisLimit(self):
+        if self.AxisLimitDialog is None and not self.image.isNull():
             self.AxisLimitDialog = genericValueDialog.editVariablesDialog(
                 self,
                 defaultValues=[10, 10],
                 minValue=[0, 0],
                 maxValue=[100, 20],
                 lowValueText=["Low Permilles y Limit",
-                            "test bla"],
+                            "High Permilles y Limit"],
                 highValueText=["higher Permilles as lower y Limit",
-                            "testbla"],
+                            "1000 - the given value as permilles as higher y Limit"],
                 WindowTitle="Plot lower Axis Limit",
                 helpText="lower value means more of the value range can be\
                     displayed at any given time, higher value means details\
                     are better visible but the cuve might go out of view",
                 reactive=True
             )
-            self.AxisLimitDialog.updateChartLimit.connect(self.updateChartLimits)
-        self.AxisLimitDialog.exec_()
-        
+            self.AxisLimitDialog.updateAction.connect(self.updateChartLimits)
+        if self.AxisLimitDialog is not None:
+            self.AxisLimitDialog.exec_()
+        else:
+            msgBox = QMessageBox()
+            msgBox.setText("load an Image first")
+            msgBox.exec_()
 
     def updateChartLimits(self, chartLimits):
         self.plotLim_low = chartLimits[0] / 10
-        self.plotLim_high = 100 - chartLimits[1] / 10
+        self.plotLim_high = 100 - (self.percent_offset_high + (chartLimits[1] / 10))
         self.updateChart()
+
+    def setShader(self):
+        
+        if self.renderOptionsDialog is None:
+            self.shader_name = self.default_shader_name
+            self.renderOptionsDialog = genericValueDialog.DropdownDialog(
+                self,
+                defaultValues=[self.default_shader_name],
+                OptionItems=[self.shader_options],
+                descriptions=["choose shader"],
+                WindowTitle="config for 3D-render",
+            )
+        self.renderOptionsDialog.exec_()
+
+        if self.renderOptionsDialog.values[0] != self.shader_name and not self.image.isNull():
+            self.shader_name = self.renderOptionsDialog.values[0]
+            self.update3d_view(rerender=True)
 
     def togglePolygons(self, value):
         for item in self.labelList:
@@ -1814,7 +1869,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fileListWidget.setCurrentRow(self.imageList.index(filename))
             self.fileListWidget.repaint()
             return
-
+        if self.render_dock.isEnabled() and self.canvas.shapes:
+            for s in self.rendererd_shapes:
+                try:
+                    self.renderWidget.removeItem(s)
+                except ValueError:
+                    pass
         self.resetState()
         self.canvas.setEnabled(False)
         if filename is None:
@@ -1920,7 +1980,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         valid_img = valid_img[img_not_zero[0].min():img_not_zero[0].max(),
                               img_not_zero[1].min():img_not_zero[1].max()]
-
+        for i in range(1, 100):
+            percent_min = np.percentile(valid_img, i)
+            if percent_min !=0 :
+                self.percent_offset_low = i - 1
+                break
+        for i in range(1, 100):
+            percent_max = np.percentile(valid_img, 100 - i)
+            if percent_max != valid_img.max() :
+                self.percent_offset_high = i - 1
+                break
         self.is_8_bit = True if image.depth() != 16 else False
         if self.is_8_bit:
             self.normalized_img = valid_img / (valid_img.max() - valid_img.min()) + valid_img.min()
@@ -1928,17 +1997,27 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.normalized_img = (valid_img - valid_img.min()) / (valid_img.max() - valid_img.min())
             self.above_thresh = self.above_thresh / (valid_img.max() - valid_img.min()) + valid_img.min()
-        #FIXME some normalization procedure
-        
+        # FIXME some normalization procedure
+
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
-        
-        self.update3d_view()
+
+        if self.render_dock.isEnabled():
+            self.update3d_view()
 
         self.canvas.imgDim = [image.height(), image.width()]
         self.filename = filename
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
+        
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+
+        self.brightnessContrastDialog = BrightnessContrastDialog(
+                utils.img_data_to_pil(self.imageData),
+                self.onNewBrightnessContrast,
+                parent=self,
+                )
+
+        self.brightnessContrastDialog.call_normalize()
         flags = {k: False for k in self._config["flags"] or []}
         try:
             for flag in list(self.labelFile.flags.keys()):
@@ -2164,13 +2243,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 mid = int(span / 2)
             self.end = mid + int(span / 2)
             self.start = mid - int(span / 2)
-        percent_min = np.percentile(self.normalized_img, self.plotLim_low)
+        percent_min = np.percentile(self.normalized_img, self.percent_offset_low + self.plotLim_low)
 
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
         if y_level is not None:
             self.y_level = y_level
         line = self.normalized_img[self.y_level - self.render_offset[0], self.start:self.end]
-        self.chart_widget.update_plot([max(percent_min, self.above_thresh/self.normalized_img.max()), self.percent_max], line, start=self.start)
+        self.chart_widget.update_plot([max(percent_min, self.above_thresh), self.percent_max], line, start=self.start)
 
     def adjustScale(self, initial=False):
         # TODO set the default zoom setting in config instead
@@ -2323,17 +2402,19 @@ class MainWindow(QtWidgets.QMainWindow):
             if fileName:
                 self.loadFile(fileName)
 
-    def update3d_view(self):
+    def update3d_view(self, rerender = False):
         # setting value range for potential height plot
         # tempImg = np.clip(self.normalized_img, self.above_thresh, self.percent_max)
         # self.cached_image = 1 * (tempImg - tempImg.mean()) / self.above_thresh
         self.cached_image = self.normalized_img * self.z_scale
-        if self.curPlot is not None:
+        if rerender:
+            self.renderWidget.removeItem(self.curPlot)
+            self.curPlot = render_3d.draw_SurfacePlot(self.cached_image, z_scale=1, shader=self.shader_name)
+            self.drawRenderedShapes("all")
+        elif self.curPlot is not None:
             self.curPlot.setData(z=self.cached_image)
         else:
-            self.curPlot = render_3d.draw_SurfacePlot(self.cached_image)
-
-
+            self.curPlot = render_3d.draw_SurfacePlot(self.cached_image,z_scale=1, shader=self.default_shader_name)
         self.renderWidget.addItem(self.curPlot)
 
     def changeOutputDirDialog(self, _value=False):

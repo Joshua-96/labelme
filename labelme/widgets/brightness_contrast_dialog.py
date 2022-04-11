@@ -126,6 +126,8 @@ class BrightnessContrastDialog(QtWidgets.QDialog):
         self.slider_brightness.setValue(50)
         self.slider_contrast.setValue(50)
         self.HasReset = True
+        self.apply_sobel_filter_checkbox.setChecked(False)
+        self.apply_gauss_filter_checkbox.setChecked(False)
         self._apply_change(self.img)
 
     @staticmethod
