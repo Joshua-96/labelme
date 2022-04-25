@@ -50,7 +50,7 @@ class Shape(object):
         label=None,
         line_color=None,
         shape_type=None,
-        flags=None,
+        flags={},
         group_id=None,
         vertex_epsilon=None
     ):

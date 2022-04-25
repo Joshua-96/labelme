@@ -152,10 +152,10 @@ class InferenceHandler(object):
     def _get_zero_img(self):
         self.n_splits_y = self.img_shape[0] // self.crop_shape[0]
         self.n_splits_x = self.img_shape[1] // self.crop_shape[1]
-        return np.zeros([(self.n_splits_y + 1) * self.crop_shape[0], (self.n_splits_x + 1) * self.crop_shape[1]])
+        return np.zeros([(self.n_splits_y + 1) * self.crop_shape[0], (self.n_splits_x + 1) * self.crop_shape[1]], np.uint16)
 
     def get_crop_stack(self):
-        self.img_stack = np.zeros(((self.n_splits_x + 1) * (self.n_splits_y + 1), self.crop_shape[0], self.crop_shape[1]))
+        self.img_stack = np.zeros(((self.n_splits_x + 1) * (self.n_splits_y + 1), self.crop_shape[0], self.crop_shape[1]), np.uint16)
 
         for i in range(self.n_splits_y + 1):
             increment_y = i * (self.crop_shape[0] - self.overlaps[0])
@@ -222,7 +222,7 @@ def polygonfit(image, precision=0.0007, closeKernel=[5, 5], dilKernel=[3, 3]):
     #Obsolete for multi-instance segmentation
     # if image.shape[2]>1:
     #     image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    image=(image*255).astype(np.uint8)
+    image=(image).astype(np.uint8)
     image=cv2.GaussianBlur(image,(5,5),0)
     _,binImg = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     #_,binImg= cv2.threshold(image, 190, 255, cv2.THRESH_BINARY)

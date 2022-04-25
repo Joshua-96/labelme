@@ -37,14 +37,17 @@ class Network:
         # self.exec_network.set_config(self.config)
         self.input_blob  = next(iter(self.network.input_info))
     def _get_input_shape(self):
-        return self.network.input_info["inputs"].input_data.shape  
-    def synchronous_inference(self,image):  
+        input_name = list(self.network.input_info.keys())[0]
+        return self.network.input_info[input_name].input_data.shape
+
+    def synchronous_inference(self,image):
         return self.exec_network.infer({self.input_blob: image})
     def async_inference(self,image):
         # currently not working
         self.exec_network.requests[0].async_infer({self.input_blob: image})
         request_status = self.exec_network.requests[0].wait(0)
-        return self.exec_network.requests[0].output_blobs['output/Sigmoid']
+        output_name = list(self.exec_network.requests[0].output_blobs.keys())[0] 
+        return self.exec_network.requests[0].output_blobs[output_name]
         
 
     def extract_output(self):

@@ -1,6 +1,6 @@
 # from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph as pg
-import pyqtgraph.opengl as gl
+import labelme.openglMod as gl
 import numpy as np
 import cv2
 
@@ -16,6 +16,7 @@ class render_3d(gl.GLViewWidget):
         GL_SRC_ALPHA = gl.shaders.GL_SRC_ALPHA
         GL_ONE_MINUS_SRC_ALPHA = gl.shaders.GL_ONE_MINUS_SRC_ALPHA
         gl.shaders.glEnable(GL_CULL_FACE)
+        #gl.shaders.glEnable(gl.shaders.GL_AUTO_NORMAL)
         #gl.shaders.glDisable(GL_CULL_FACE)
         self.image = image
         if not image is None:
@@ -32,11 +33,11 @@ def draw_SurfacePlot(z_vals, z_scale=1, shader="shaded"):
     else:
         computeNormals = True
     Plot = gl.GLSurfacePlotItem(z=z_vals,
-                        shader=shader,
-                        computeNormals=computeNormals,
-                        glOptions='opaque',
-                        smooth=True,
-                        )
+                                shader=shader,
+                                computeNormals=computeNormals,
+                                glOptions='opaque',
+                                smooth=True,
+                                )
     Plot.scale(1, 1, z_scale)
     Plot.translate(0, 0, 0)
     return Plot

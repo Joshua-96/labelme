@@ -41,6 +41,7 @@ from labelme.label_file import LabelFile
 from labelme.label_file import LabelFileError
 from labelme.logger import logger
 from labelme.shape import Shape
+from labelme.utils import model_inference_module
 from labelme.widgets import dock_title, \
     BrightnessContrastDialog, \
     Canvas, \
@@ -147,6 +148,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.brightnessContrastDialog = None
 
         self.z_scale = 511
+
+        self.model = None
+
+        self.shader_name = None
 
         self.shader_options = {
             "shaded": "Surface is colored grey",
@@ -1457,7 +1462,7 @@ class MainWindow(QtWidgets.QMainWindow):
             item = self.labelList.findItemByShape(shape)
             self.labelList.removeItem(item)
 
-    def loadShapes(self, shapes, replace=True):
+    def loadShapes(self, shapes, replace=True, mode="all"):
         self._noSelectionSlot = True
         for shape in shapes:
             self.addLabel(shape)
@@ -1467,15 +1472,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.init_poly_array()
         self.canvas.init_zeroImg()
         self.canvas.getDistMapUpdate()
-        self.drawRenderedShapes(mode="all")
+        self.drawRenderedShapes(mode=mode)
 
     def loadLabels(self, shapes):
         s = []
+        print(len(shapes))
         for shape in shapes:
             label = shape["label"]
             points = shape["points"]
             shape_type = shape["shape_type"]
-            flags = shape["flags"]
+            flags = shape["flags"] if shape["flags"] is not None else {}
             group_id = shape["group_id"]
             other_data = shape["other_data"]
 
@@ -1748,7 +1754,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.loadFlags(flags)
 
     def brightnessContrast(self, value):
-        
+
         if self.brightnessContrastDialog is None:
             self.brightnessContrastDialog = BrightnessContrastDialog(
                 utils.img_data_to_pil(self.imageData),
@@ -1875,6 +1881,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.renderWidget.removeItem(s)
                 except ValueError:
                     pass
+            if self.temp_rendered_shape is not None:
+                self.renderWidget.removeItem(self.temp_rendered_shape)
+            self.temp_rendered_shape = None
+            self.rendererd_shapes = []
+            self.canvas.shapes = []
         self.resetState()
         self.canvas.setEnabled(False)
         if filename is None:
@@ -2103,7 +2114,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.temp_rendered_shape is not None:
                 self.renderWidget.removeItem(self.temp_rendered_shape)
         else:
-            self.renderWidget.removeItem(self.rendererd_shapes[index])
+            try:
+                self.renderWidget.removeItem(self.rendererd_shapes[index])
+            except (ValueError, IndexError) as e:
+                print(e)
+                pass
         # import IPython; IPython.embed()
         points = self._get_interpolated_points(shape)
         temp_rendered_shape = (gl.GLLinePlotItem(
@@ -2128,6 +2143,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def drawRenderedShapes(self, mode: str):
         # draw most recent shapes if one was added or all
+        if len(self.canvas.shapes) == 0:
+            return
+        
         if mode == "most_recent":
             shapes = [self.canvas.shapes[-1]]
             self.renderWidget.removeItem(self.temp_rendered_shape)
@@ -2135,6 +2153,8 @@ class MainWindow(QtWidgets.QMainWindow):
         elif mode == "all":
             shapes = self.canvas.shapes
             self.temp_rendered_shape = None
+        elif mode == "append":
+            pass
         else:
             raise ValueError
         for s in shapes:
@@ -2402,19 +2422,19 @@ class MainWindow(QtWidgets.QMainWindow):
             if fileName:
                 self.loadFile(fileName)
 
-    def update3d_view(self, rerender = False):
+    def update3d_view(self, rerender=False):
         # setting value range for potential height plot
         # tempImg = np.clip(self.normalized_img, self.above_thresh, self.percent_max)
         # self.cached_image = 1 * (tempImg - tempImg.mean()) / self.above_thresh
-        self.cached_image = self.normalized_img * self.z_scale
-        if rerender:
+        self.cached_image = cv2.GaussianBlur(self.normalized_img * self.z_scale,(3,3),0.5,0.5)
+        # temp_img = cv2.medianBlur(self.normalized_img.astype(np.float32),3)
+        # self.cached_image = temp_img * self.z_scale
+        if self.curPlot is not None:
             self.renderWidget.removeItem(self.curPlot)
-            self.curPlot = render_3d.draw_SurfacePlot(self.cached_image, z_scale=1, shader=self.shader_name)
-            self.drawRenderedShapes("all")
-        elif self.curPlot is not None:
-            self.curPlot.setData(z=self.cached_image)
-        else:
-            self.curPlot = render_3d.draw_SurfacePlot(self.cached_image,z_scale=1, shader=self.default_shader_name)
+        if self.shader_name is None:
+            self.shader_name = self.default_shader_name
+        self.curPlot = render_3d.draw_SurfacePlot(self.cached_image, z_scale=1, shader=self.shader_name)
+        self.drawRenderedShapes("all")
         self.renderWidget.addItem(self.curPlot)
 
     def changeOutputDirDialog(self, _value=False):
@@ -2684,13 +2704,33 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def ai_infer(self):
         if self.model is None:
-            self.model = utils.ai_infer.GeneralModel(
-                self._config["model_settings"]["model_path"],
+            self.model_folder_path = pl.Path(self._config["ai_config"]["model_folder_path"])
+            self.cur_model_name = self._config["ai_config"]["default_model"] + ".temp"
+            self.cur_model_path = self.model_folder_path.joinpath(self.cur_model_name)
+        if self.model is None:
+            self.model = model_inference_module.GeneralModel(
+                self.cur_model_path,
                 "ov",
                 overlaps=[128, 128]
             )
-        prediction = utils.ai_infer.predict(self.image_as_array, self.model)
-        points = utils.image.polygonfit(prediction)
+        threshold = 0.5
+        prediction = model_inference_module.predict(self.image_as_array, self.model)
+        shape_points = utils.image.polygonfit(prediction)
+        shapes = []
+        for points in shape_points:
+            shape = Shape(
+                label=f"auto_gen_{self.cur_model_name}",
+                shape_type="polygon",
+                group_id=threshold,
+                vertex_epsilon=self.canvas.epsilon / 10),
+
+            for x, y in zip(points[:,0,0], points[:,0,1]):
+                shape.addPoint(QtCore.QPointF(x, y))
+            shape.close()
+            shapes.append(shape)
+        self.setDirty()
+        self.loadShapes(shapes,replace=False, mode="all")
+
 
     @property
     def imageList(self):

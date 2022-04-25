@@ -1,3 +1,6 @@
+import numpy as np
+import os
+
 def get_fitted_shape(img_shape, divisor=64):
     y_dim = np.ceil(img_shape[0] / divisor)
     x_dim = np.ceil(img_shape[1] / divisor)
