@@ -1,47 +1,6 @@
 # -*- coding: utf-8 -*-
 
-import functools
-from math import ceil, floor
-import os
-import os.path as osp
-import re
-import gc
-from webbrowser import open as wb_open
-import sys
-import PIL
-import PyQt5
-import cv2
-import numpy as np
-from glob import glob
-import pyqtgraph as pg
-import pyqtgraph.opengl as gl
-import numpy as np
-from PyQt5.QtCore import QSize
-from PyQt5.QtGui import QColor, QFont, qRgb
-from PyQt5.QtWidgets import QPushButton, QWidget,QMessageBox  # ,QWhatsThis
-from ruamel import yaml
-import pathlib as pl
-dev_path = os.getcwd()
-sys.path.insert(1, dev_path)
-
-from imgviz import label_colormap
-
-from qtpy import QtCore
-from qtpy.QtCore import Qt
-from qtpy import QtGui
-from qtpy import QtWidgets
-
-from labelme import __appname__
-from labelme import PY2
-
-from labelme.viewer.GLViewWidget import cust_GLViewWidget
-from labelme import utils
-from labelme.config import get_config
-from labelme.label_file import LabelFile
-from labelme.label_file import LabelFileError
-from labelme.logger import logger
-from labelme.shape import Shape
-from labelme.utils import model_inference_module
+#from labelme.utils import model_inference_module
 from labelme.widgets import dock_title, \
     BrightnessContrastDialog, \
     Canvas, \
@@ -56,6 +15,46 @@ from labelme.widgets import dock_title, \
     add_flag_dialog, \
     chart_widget, \
     render_3d
+from labelme.shape import Shape
+from labelme.logger import logger
+from labelme.label_file import LabelFileError
+from labelme.label_file import LabelFile
+from labelme.config import get_config
+from labelme import utils
+from labelme.viewer.GLViewWidget import cust_GLViewWidget
+from labelme import PY2
+from labelme import __appname__
+from qtpy import QtWidgets
+from qtpy import QtGui
+from qtpy.QtCore import Qt
+from qtpy import QtCore
+from imgviz import label_colormap
+from copy import copy, deepcopy
+import functools
+from math import ceil, floor
+import os
+import os.path as osp
+import re
+import gc
+from webbrowser import open as wb_open
+import sys
+import PIL
+import PyQt5
+import cv2
+# import pandas as pd
+import numpy as np
+from glob import glob
+import pyqtgraph as pg
+import pyqtgraph.opengl as gl
+import numpy as np
+from PyQt5.QtCore import QSize
+from PyQt5.QtGui import QColor, QFont, qRgb
+from PyQt5.QtWidgets import QPushButton, QWidget, QMessageBox  # ,QWhatsThis
+from ruamel import yaml
+import pathlib as pl
+dev_path = os.getcwd()
+sys.path.insert(1, dev_path)
+
 
 # FIXME
 # - [medium] Set max zoom value to something big enough for FitWidth/Window
@@ -153,6 +152,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.shader_name = None
 
+        self.smooth_render = False
+
         self.shader_options = {
             "shaded": "Surface is colored grey",
             "normalColor": "Surface is colored according to the Orientation " +
@@ -163,22 +164,27 @@ class MainWindow(QtWidgets.QMainWindow):
                          "on the Height Value normals are not " +
                          "calculated, thus this Option accelerates rendering"}
 
+        self.render_smooth_options = {"True" : "computationally expensive," +
+                                               "draws Faces with smooth transition",
+                                      "False": "faster but edges are more visible"}
+
         ["shaded", "normalColor", "viewNormalColor", "heightColor"]
 
         self.default_shader_name = "shaded"
 
+        self.default_render_smooth = "False"
+
         self.renderOptionsDialog = None
-
-
 
         self.init_render_Camera_params = {"elevation": 30.0,
                                           "distance": 2500,
                                           "fov": 60,
                                           "center": QtGui.QVector3D(2500, 0, 0),
                                           "azimuth" : 20,
-                                          "rotation": QtGui.QQuaternion(1.0, 0.0, 0.0, 0.0)
+                                          "rotation": QtGui.QQuaternion(
+                                              1.0, 0.0, 0.0, 0.0)
                                           }
-        
+
         self.temp_rendered_shape = None
         assert self._config["init_zoom_mode"] in \
             ["FIT_WINDOW", "FIT_WIDTH", "MANUAL_ZOOM", None], \
@@ -318,7 +324,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chart_dock.setTitleBarWidget(self.chart_dock_title)
         self.chart_dock.setObjectName(u"Charts")
         self.chart_widget = chart_widget.Canvas(self)
-        
+
         layout = QtWidgets.QFormLayout()
         layout.addRow(self.tr(""), self.chart_widget)
         # layout.addRow(self.tr(""), self.flag_widget)
@@ -353,9 +359,7 @@ class MainWindow(QtWidgets.QMainWindow):
             Qt.Vertical: scrollArea.verticalScrollBar(),
             Qt.Horizontal: scrollArea.horizontalScrollBar(),
         }
-        
-        
-        
+
         self.canvas.scrollRequest.connect(self.scrollRequest)
 
         self.canvas.newShape.connect(self.newShape)
@@ -370,7 +374,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(scrollArea)
 
         features = QtWidgets.QDockWidget.DockWidgetFeatures()
-        for dock in ["flag_dock", "label_dock", "shape_dock", "file_dock", "render_dock","chart_dock"]:
+        for dock in ["flag_dock", "label_dock", "shape_dock", "file_dock", "render_dock", "chart_dock"]:
             if self._config[dock]["closable"]:
                 features = features | QtWidgets.QDockWidget.DockWidgetClosable
             if self._config[dock]["floatable"]:
@@ -1760,7 +1764,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 utils.img_data_to_pil(self.imageData),
                 self.onNewBrightnessContrast,
                 parent=self,
-                )
+            )
         brightness, contrast = self.brightnessContrast_values.get(
             self.filename, (None, None)
         )
@@ -1775,8 +1779,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.brightnessContrast_values[self.filename] = (brightness, contrast)
         self.global_sobel_filter_enabled = self.brightnessContrastDialog.apply_sobel_filter_checkbox.isChecked()
         self.global_sobel_filter_settings = [self.brightnessContrastDialog.kernelSize.value(),
-                                             self.brightnessContrastDialog.derivative.value(),  
-                                             self.brightnessContrastDialog.clip_level.value()] 
+                                             self.brightnessContrastDialog.derivative.value(),
+                                             self.brightnessContrastDialog.clip_level.value()]
 
     def setSnappingDistance(self):
         dialog = genericValueDialog.editVariablesDialog(
@@ -1823,9 +1827,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 minValue=[0, 0],
                 maxValue=[100, 20],
                 lowValueText=["Low Permilles y Limit",
-                            "High Permilles y Limit"],
+                              "High Permilles y Limit"],
                 highValueText=["higher Permilles as lower y Limit",
-                            "1000 - the given value as permilles as higher y Limit"],
+                               "1000 - the given value as permilles as higher y Limit"],
                 WindowTitle="Plot lower Axis Limit",
                 helpText="lower value means more of the value range can be\
                     displayed at any given time, higher value means details\
@@ -1842,24 +1846,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def updateChartLimits(self, chartLimits):
         self.plotLim_low = chartLimits[0] / 10
-        self.plotLim_high = 100 - (self.percent_offset_high + (chartLimits[1] / 10))
+        self.plotLim_high = 100 - \
+            (self.percent_offset_high + (chartLimits[1] / 10))
         self.updateChart()
 
     def setShader(self):
-        
+
         if self.renderOptionsDialog is None:
             self.shader_name = self.default_shader_name
             self.renderOptionsDialog = genericValueDialog.DropdownDialog(
                 self,
-                defaultValues=[self.default_shader_name],
-                OptionItems=[self.shader_options],
-                descriptions=["choose shader"],
+                defaultValues=[self.default_shader_name,
+                               self.default_render_smooth],
+                OptionItems=[self.shader_options, self.render_smooth_options],
+                descriptions=["choose shader", "smoth rendering enabled"],
                 WindowTitle="config for 3D-render",
             )
+            prevOptions = [self.default_shader_name, self.default_render_smooth]
+        else:
+            prevOptions = deepcopy(self.renderOptionsDialog.values)
         self.renderOptionsDialog.exec_()
 
-        if self.renderOptionsDialog.values[0] != self.shader_name and not self.image.isNull():
+        if self.renderOptionsDialog.values != prevOptions and not self.image.isNull():
             self.shader_name = self.renderOptionsDialog.values[0]
+            self.smooth_render = True if self.renderOptionsDialog.values[1] == "True" else False
             self.update3d_view(rerender=True)
 
     def togglePolygons(self, value):
@@ -1927,7 +1937,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.otherData = self.labelFile.otherData
         else:
-            self.imageData,self.is_8_bit = LabelFile.load_image_file(str(filename))
+            self.imageData, self.is_8_bit = LabelFile.load_image_file(
+                str(filename))
             if self.imageData is None:
                 self.labelFileOut = LabelFile()
                 self.labelFileOut.load(filename)
@@ -1971,29 +1982,35 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         self.image = image
         self.image_as_array = utils.img_data_to_arr(self.imageData)
-        
-        
+
         # removing 0 edges in array
         thresh_for_clipping = self.image_as_array.size / 500
-        unique_vals, unique_count = np.unique(self.image_as_array, return_counts = True)
-        cum_unique_count = unique_count[1:].cumsum() # accumulate from values > 0 since you want to ignore 0
-        self.above_thresh = unique_vals[1:][cum_unique_count > thresh_for_clipping][0] # get the first significant value
+        unique_vals, unique_count = np.unique(
+            self.image_as_array, return_counts=True)
+        # accumulate from values > 0 since you want to ignore 0
+        cum_unique_count = unique_count[1:].cumsum()
+        # get the first significant value
+        self.above_thresh = unique_vals[1:][cum_unique_count >
+                                            thresh_for_clipping][0]
         if self.above_thresh == 0:
-            self.above_thresh = unique_vals[unique_count > thresh_for_clipping][1]
+            self.above_thresh = unique_vals[unique_count >
+                                            thresh_for_clipping][1]
         valid_img = self.image_as_array
-        # Set all non significant values to 0 
-        valid_img[valid_img < self.above_thresh] = 0 # set all non-significant values to 0
+        # Set all non significant values to 0
+        # set all non-significant values to 0
+        valid_img[valid_img < self.above_thresh] = 0
         img_not_zero = self.image_as_array.nonzero()
         # get offset between 2d and 3d view
-        self.render_offset = np.array([img_not_zero[0].min(), img_not_zero[1].min()])
-        
+        self.render_offset = np.array(
+            [img_not_zero[0].min(), img_not_zero[1].min()])
+
         # crop all-zero rows and columns
 
         valid_img = valid_img[img_not_zero[0].min():img_not_zero[0].max(),
                               img_not_zero[1].min():img_not_zero[1].max()]
         for i in range(1, 100):
             percent_min = np.percentile(valid_img, i)
-            if percent_min !=0 :
+            if percent_min != 0 :
                 self.percent_offset_low = i - 1
                 break
         for i in range(1, 100):
@@ -2003,11 +2020,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 break
         self.is_8_bit = True if image.depth() != 16 else False
         if self.is_8_bit:
-            self.normalized_img = valid_img / (valid_img.max() - valid_img.min()) + valid_img.min()
-            self.above_thresh = self.above_thresh / (valid_img.max() - valid_img.min()) + valid_img.min()
+            self.normalized_img = valid_img / \
+                (valid_img.max() - valid_img.min()) + valid_img.min()
+            self.above_thresh = self.above_thresh / \
+                (valid_img.max() - valid_img.min()) + valid_img.min()
         else:
-            self.normalized_img = (valid_img - valid_img.min()) / (valid_img.max() - valid_img.min())
-            self.above_thresh = self.above_thresh / (valid_img.max() - valid_img.min()) + valid_img.min()
+            self.normalized_img = (valid_img - valid_img.min()) / \
+                (valid_img.max() - valid_img.min())
+            self.above_thresh = self.above_thresh / \
+                (valid_img.max() - valid_img.min()) + valid_img.min()
         # FIXME some normalization procedure
 
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
@@ -2019,14 +2040,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filename = filename
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
-        
+
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
 
         self.brightnessContrastDialog = BrightnessContrastDialog(
-                utils.img_data_to_pil(self.imageData),
-                self.onNewBrightnessContrast,
-                parent=self,
-                )
+            utils.img_data_to_pil(self.imageData),
+            self.onNewBrightnessContrast,
+            parent=self,
+        )
 
         self.brightnessContrastDialog.call_normalize()
         flags = {k: False for k in self._config["flags"] or []}
@@ -2084,12 +2105,13 @@ class MainWindow(QtWidgets.QMainWindow):
             _, contrast = self.brightnessContrast_values.get(
                 self.recentFiles[0], (None, None)
             )
-        kernel_size, derivative, clip_level = self.global_sobel_filter_settings if self.global_sobel_filter_settings is not None else [None, None, None]
+        kernel_size, derivative, clip_level = self.global_sobel_filter_settings if self.global_sobel_filter_settings is not None else [
+            None, None, None]
         if brightness is not None:
             dialog.slider_brightness.setValue(brightness)
         if contrast is not None:
             dialog.slider_contrast.setValue(contrast)
-        # FIXME properly implement filter keeping settings 
+        # FIXME properly implement filter keeping settings
         if kernel_size is not None:
             dialog.call_normalize()
             dialog.apply_sobel_filter_checkbox.setChecked(True)
@@ -2109,7 +2131,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return True
 
     def updateRenderedShapes(self, shape, index):
-        # None Index is not possible, that's why -1 
+        # None Index is not possible, that's why -1
         if index == -1:
             if self.temp_rendered_shape is not None:
                 self.renderWidget.removeItem(self.temp_rendered_shape)
@@ -2139,13 +2161,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.renderWidget.removeItem(self.rendererd_shapes[index])
             self.rendererd_shapes.remove(self.rendererd_shapes[index])
 
-
-
     def drawRenderedShapes(self, mode: str):
         # draw most recent shapes if one was added or all
         if len(self.canvas.shapes) == 0:
             return
-        
+
         if mode == "most_recent":
             shapes = [self.canvas.shapes[-1]]
             self.renderWidget.removeItem(self.temp_rendered_shape)
@@ -2181,12 +2201,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 points[accum_cnt + sample] = (cur_p[1],
                                               cur_p[0],
                                               self.cached_image[
-                                                  int(cur_p[1]) - self.render_offset[0],
+                                                  int(cur_p[1]) -
+                    self.render_offset[0],
                                                   int(cur_p[0]) - self.render_offset[1]]
-                                              )
+                )
         points[:, :2] = points[:, :2] - self.render_offset
         return points
-
 
     def resizeEvent(self, event):
         if (
@@ -2228,28 +2248,29 @@ class MainWindow(QtWidgets.QMainWindow):
                                       int(pos.x() - self.render_offset[1]) + offset] + 2
                 hor_points[i] = pos.y() + offset, pos.x(),\
                     self.cached_image[int(pos.y() - self.render_offset[0]) + offset,
-                                      int(pos.x()-self.render_offset[1])] + 2
+                                      int(pos.x() - self.render_offset[1])] + 2
             except IndexError:
                 vert_points[i] = pos.y(), pos.x() + offset, 0
                 hor_points[i] = pos.y() + offset, pos.x(), 0
-        vert_points[:, :2] = vert_points[:,:2] - self.render_offset
-        hor_points[:, :2] = hor_points[:,:2] - self.render_offset 
+        vert_points[:, :2] = vert_points[:, :2] - self.render_offset
+        hor_points[:, :2] = hor_points[:, :2] - self.render_offset
         self.vert_crosshair = pg.opengl.GLLinePlotItem(
             pos=vert_points,
             color=self.crosshair_color,
             width=self.crosshair_width
-            )
+        )
         self.hor_crosshair = pg.opengl.GLLinePlotItem(
             pos=hor_points,
             color=self.crosshair_color,
             width=self.crosshair_width
-            )
+        )
         self.renderWidget.addItem(self.vert_crosshair)
         self.renderWidget.addItem(self.hor_crosshair)
 
     def updateChart(self, y_level=None):
         maxScrollValue = self.scrollBars[Qt.Horizontal].maximum()
-        horizontalOffset = maxScrollValue - self.scrollBars[Qt.Horizontal].value()
+        horizontalOffset = maxScrollValue - \
+            self.scrollBars[Qt.Horizontal].value()
         fitWidthZoom = self.scaleFitWidth()
         currentZoom = self.zoomWidget.value()
         effectiveZoom = currentZoom / (100 * fitWidthZoom)
@@ -2258,18 +2279,21 @@ class MainWindow(QtWidgets.QMainWindow):
             span = int(span / effectiveZoom)
             if maxScrollValue > 0:
                 mid = int(span / 2) + int((self.canvas.pixmap.width() - span) *
-                                            (1 - (horizontalOffset / maxScrollValue)))
+                                          (1 - (horizontalOffset / maxScrollValue)))
             else:
                 mid = int(span / 2)
             self.end = mid + int(span / 2)
             self.start = mid - int(span / 2)
-        percent_min = np.percentile(self.normalized_img, self.percent_offset_low + self.plotLim_low)
+        percent_min = np.percentile(
+            self.normalized_img, self.percent_offset_low + self.plotLim_low)
 
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
         if y_level is not None:
             self.y_level = y_level
-        line = self.normalized_img[self.y_level - self.render_offset[0], self.start:self.end]
-        self.chart_widget.update_plot([max(percent_min, self.above_thresh), self.percent_max], line, start=self.start)
+        line = self.normalized_img[self.y_level -
+                                   self.render_offset[0], self.start:self.end]
+        self.chart_widget.update_plot(
+            [max(percent_min, self.above_thresh), self.percent_max], line, start=self.start)
 
     def adjustScale(self, initial=False):
         # TODO set the default zoom setting in config instead
@@ -2395,7 +2419,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.filename and load:
             gc.collect()
             self.loadFile(self.filename)
-            
+
         self._config["keep_prev"] = keep_prev
 
     def openFile(self, _value=False):
@@ -2426,14 +2450,23 @@ class MainWindow(QtWidgets.QMainWindow):
         # setting value range for potential height plot
         # tempImg = np.clip(self.normalized_img, self.above_thresh, self.percent_max)
         # self.cached_image = 1 * (tempImg - tempImg.mean()) / self.above_thresh
-        self.cached_image = cv2.GaussianBlur(self.normalized_img * self.z_scale,(3,3),0.5,0.5)
+        # compensate for not smoothing the normals with gauss smooth
+        if self.smooth_render:
+            self.cached_image = self.normalized_img * self.z_scale
+        else:
+            self.cached_image = cv2.GaussianBlur(
+                self.normalized_img * self.z_scale, (3, 3), 0.4, 0.4)
         # temp_img = cv2.medianBlur(self.normalized_img.astype(np.float32),3)
         # self.cached_image = temp_img * self.z_scale
         if self.curPlot is not None:
             self.renderWidget.removeItem(self.curPlot)
         if self.shader_name is None:
             self.shader_name = self.default_shader_name
-        self.curPlot = render_3d.draw_SurfacePlot(self.cached_image, z_scale=1, shader=self.shader_name)
+        self.curPlot = render_3d.draw_SurfacePlot(
+            self.cached_image,
+            z_scale=1,
+            shader=self.shader_name,
+            smooth=self.smooth_render)
         self.drawRenderedShapes("all")
         self.renderWidget.addItem(self.curPlot)
 
@@ -2470,7 +2503,6 @@ class MainWindow(QtWidgets.QMainWindow):
                              load=False,
                              omit_label_files=True)
         current_filename = self.filename
-
 
         if current_filename in self.imageList:
             # retain currently selected file
@@ -2704,9 +2736,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def ai_infer(self):
         if self.model is None:
-            self.model_folder_path = pl.Path(self._config["ai_config"]["model_folder_path"])
+            self.model_folder_path = pl.Path(
+                self._config["ai_config"]["model_folder_path"])
             self.cur_model_name = self._config["ai_config"]["default_model"] + ".temp"
-            self.cur_model_path = self.model_folder_path.joinpath(self.cur_model_name)
+            self.cur_model_path = self.model_folder_path.joinpath(
+                self.cur_model_name)
         if self.model is None:
             self.model = model_inference_module.GeneralModel(
                 self.cur_model_path,
@@ -2714,23 +2748,40 @@ class MainWindow(QtWidgets.QMainWindow):
                 overlaps=[128, 128]
             )
         threshold = 0.5
-        prediction = model_inference_module.predict(self.image_as_array, self.model)
-        shape_points = utils.image.polygonfit(prediction)
+        prediction = model_inference_module.predict(
+            self.image_as_array, self.model)
+        shape_points = utils.image.polygonfit(prediction, precision=0.002)
         shapes = []
         for points in shape_points:
             shape = Shape(
                 label=f"auto_gen_{self.cur_model_name}",
                 shape_type="polygon",
                 group_id=threshold,
-                vertex_epsilon=self.canvas.epsilon / 10),
-
-            for x, y in zip(points[:,0,0], points[:,0,1]):
+                vertex_epsilon=self.canvas.epsilon / 10,
+                flags={})
+            center = points.mean(axis=0)
+            shiftPoints = points - center
+            polarPoints = np.empty((points.shape[0], 2), dtype=np.float32)
+            i = 0
+            for x, y in zip(shiftPoints[:, 0, 0], shiftPoints[:, 0, 1]):
+                polarPoints[i, 0] = np.hypot(x, y)
+                polarPoints[i, 1] = np.arctan2(y, x)
+                i += 1
+            # sort the polar transformed points by angle
+            polarPoints = polarPoints[polarPoints[:, 1].argsort()]
+            shiftPoints[:, 0, 1] = polarPoints[:, 0] * np.sin(polarPoints[:, 1])
+            shiftPoints[:, 0, 0] = polarPoints[:, 0] * np.cos(polarPoints[:, 1])
+            SortedPoints = (shiftPoints[:, 0, :] + center).astype(
+                np.uint32)
+            sP = pd.DataFrame(SortedPoints)
+            sP.drop_duplicates(inplace=True)
+            SortedPoints = sP.to_numpy()
+            for x, y in zip(points[:, 0, 0], points[:, 0, 1]):
                 shape.addPoint(QtCore.QPointF(x, y))
             shape.close()
             shapes.append(shape)
         self.setDirty()
-        self.loadShapes(shapes,replace=False, mode="all")
-
+        self.loadShapes(shapes, replace=False, mode="all")
 
     @property
     def imageList(self):
@@ -2776,7 +2827,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.openNextImg()
 
-    def importDirImages(self, dirpath, pattern=None, load=True, omit_label_files = False):
+    def importDirImages(self, dirpath, pattern=None, load=True, omit_label_files=False):
         self.actions.openNextImg.setEnabled(True)
         self.actions.openPrevImg.setEnabled(True)
 
@@ -2790,8 +2841,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.relPathList = []
         image_suffix_priortiy = [".png", ".tif", ".bmp"]
         if not omit_label_files:
-            image_suffix_priortiy.insert(0,LabelFile.suffix)
-        ImageList = self.scanAllImages(dirpath,image_suffix_priortiy)
+            image_suffix_priortiy.insert(0, LabelFile.suffix)
+        ImageList = self.scanAllImages(dirpath, image_suffix_priortiy)
         for i, filename in enumerate(ImageList):
             if pattern and pattern not in str(filename):
                 continue
@@ -2813,10 +2864,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fileListWidget.addItem(item)
         self.openNextImg(load=load)
 
+    def scanAllImages(self, folderPath, image_suffix_priortiy):
 
-    def scanAllImages(self, folderPath,image_suffix_priortiy):
-        
-        #loop until suitalbe images are found
+        # loop until suitalbe images are found
         for image_suffix in image_suffix_priortiy:
             DATAPOINT_LIST = glob(
                 folderPath + '/**/*{}'.format(image_suffix),

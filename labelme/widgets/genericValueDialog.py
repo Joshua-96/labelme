@@ -133,7 +133,6 @@ class DropdownDialog(QtWidgets.QDialog):
         # self.OptionDescription = OptionDescription
         for i,dropDown in enumerate(OptionItems):
             self.comboBox.append(self.get_dropDown(dropDown, i))
-            self.comboBox[-1].setCurrentText(self.defaultValues[i])
             self.decriptionLabel.append(QLabel())
             self.decriptionLabel[-1].setText(self.descriptions[i])
             self.decriptionLabel[-1].setWordWrap(True)
@@ -141,6 +140,7 @@ class DropdownDialog(QtWidgets.QDialog):
             self.genericOptionDescription.setWordWrap(True)
             self.OptionDescriptionLabel.append(
                 self.genericOptionDescription)
+            self.comboBox[-1].setCurrentText(self.defaultValues[i])
             self.selectionChanged(i, init_call=True)
         # self.OptionDescriptionLabel.setText(self.OptionItems[0])
 
