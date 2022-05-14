@@ -1,3 +1,4 @@
+import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Cursor
@@ -14,25 +15,39 @@ class Canvas(FigureCanvas):
         self.setParent(parent)
         t = np.arange(0.0, 2.0, 0.01)
         s = 1 + np.sin(2 * np.pi * t)
-        # self.cursor = Cursor(self.ax, horizOn=True, vertOn=True)
+        self.lx = self.ax.axvline(0, color='k')
+        # self.cursor = Cursor(self.ax, horizOn=False, vertOn=True)
 
         self.ax.plot(t, s)
         self.ax.grid()
 
-    def update_plot(self, ylim: list, x_vals: np.ndarray, start: int = 0):
-        assert len(ylim) == 2,\
+    def update_plot(self,
+                    x_pos: int,
+                    y_lim: list,
+                    x_vals: np.ndarray,
+                    start: int = 0):
+        assert len(y_lim) == 2,\
             "ylim must specify upper and lower limit of y axis"
         self.ax.clear()
         self.ax.margins(x=0)
         self.ax.use_sticky_edges = True
+        # if x_pos is not None:
+        #     self.ax.axvline(x_pos)
         y_range = np.arange(start, start + len(x_vals), 1)
         self.line, = self.ax.plot(y_range, x_vals)
         self.ax.set(
             xlabel="X Position" ,
             ylabel="Pixel Value",
             title="Height Plot",
-            ylim = ylim)
+            ylim = y_lim)
+        self.lx = self.ax.axvline(start, color='k')
+        if x_pos is not None:
+            self.updateXPos(x_pos)
+        # self.cursor = Cursor(self.ax, horizOn=False, vertOn=True)
         # self.ax.draw()
+
+    def updateXPos(self, pos):
+        self.lx.set_xdata(pos)
 
     def mousePressEvent(self, ev):
         y = ev.pos().y()
@@ -51,7 +66,6 @@ class Canvas(FigureCanvas):
                                            xycoords="subfigure pixels",
                                            textcoords="offset pixels"
                                            )
-
         self.coord.append((x, y))
         self.cursor = Cursor(self.ax, horizOn=True, vertOn=True, useblit=True)
         self.ax.axvline(mapped_x_pos, color="red")

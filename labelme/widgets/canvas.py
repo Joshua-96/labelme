@@ -27,10 +27,11 @@ class Canvas(QtWidgets.QWidget):
     zoomRequest = QtCore.Signal(int, QtCore.QPoint)
     scrollRequest = QtCore.Signal(int, int)
     newShape = QtCore.Signal()
-    chartUpdate = QtCore.Signal(int)
+    chartUpdate = QtCore.Signal(list)
     cursorMoved = QtCore.Signal(QtCore.QPointF)
     selectionChanged = QtCore.Signal(list)
-    UpdateRenderedShape = QtCore.Signal(Shape, int)
+    UpdateRenderedShape = QtCore.Signal(Shape, int, bool)
+    ViewPortSync = QtCore.Signal(QtGui.QWheelEvent)
     drawRenderedShape = QtCore.Signal(str)
     removeRenderedShape = QtCore.Signal(int)
     shapeMoved = QtCore.Signal()
@@ -254,6 +255,7 @@ class Canvas(QtWidgets.QWidget):
                 length = QtCore.QLineF(self.line[1], self.line[0]).length()
                 if length > self.trace_smothness and not self.pause_tracing:
                     self.current.addPoint(self.line[1])
+                    self.UpdateRenderedShape.emit(self.current, -1, False)
                     self.line[0] = self.current[-1]
             elif self.createMode == "rectangle":
                 self.line.points = [self.current[0], pos]
@@ -400,12 +402,11 @@ class Canvas(QtWidgets.QWidget):
 
     def init_zeroImg(self):
         self.ZeroImg = np.zeros(
-                [self.imgDim[0],
-                    self.imgDim[1],
-                    len(self.shapes)
-                 ]
+            [self.imgDim[0],
+             self.imgDim[1],
+             len(self.shapes)
+             ]
         )
-
 
     def getDistMapUpdate(self, index=None):
         if self.ZeroImg is None:
@@ -419,8 +420,8 @@ class Canvas(QtWidgets.QWidget):
             self.distMap_crit = self.ZeroImg.astype(np.bool)
         if index is not None:
             if index >= self.distMap_crit.shape[-1]:
-            # self.distMap_crit = self.ZeroImg.astype(np.bool)
-            # if index >= self.distMap_crit.shape[-1]:
+                # self.distMap_crit = self.ZeroImg.astype(np.bool)
+                # if index >= self.distMap_crit.shape[-1]:
 
                 self.ZeroImg = np.zeros(
                     [self.imgDim[0],
@@ -459,22 +460,22 @@ class Canvas(QtWidgets.QWidget):
     def removeSelectedPoint(self):
         shape = self.prevhShape
         index = self.prevhVertex
-       
+
         if shape is None or index is None:
             return
         shape.removePoint(index)
         # shape.poly_array = np.delete(shape.poly_array, shape.poly_array[index])
         shape_index = self.shapes.index(shape)
 
-        self.UpdateRenderedShape.emit(shape, shape_index)
+        self.UpdateRenderedShape.emit(shape, shape_index, True)
         shape.highlightClear()
         self.hShape = shape
         self.prevhVertex = None
         self.movingShape = True
-        
-         # Save changes
-        
-        #self.getDistMapUpdate()
+
+        # Save changes
+
+        # self.getDistMapUpdate()
 
     def mousePressEvent(self, ev):
         if QT5:
@@ -488,7 +489,7 @@ class Canvas(QtWidgets.QWidget):
                     if self.createMode == "polygon":
                         self.current.addPoint(self.line[1])
                         self.line[0] = self.current[-1]
-                        self.UpdateRenderedShape.emit(self.current, -1)
+                        self.UpdateRenderedShape.emit(self.current, -1, False)
                         if self.current.isClosed():
                             self.finalise()
                     elif self.createMode == "trace":
@@ -601,7 +602,7 @@ class Canvas(QtWidgets.QWidget):
         self.selectedShapesCopy = []
         self.repaint()
         self.storeShapes()
-        #self.getDistMapUpdate()
+        # self.getDistMapUpdate()
         return True
 
     def hideBackroundShapes(self, value):
@@ -627,6 +628,7 @@ class Canvas(QtWidgets.QWidget):
             and len(self.current) > 3
         ):
             self.current.popPoint()
+
             self.finalise()
 
     def selectShapes(self, shapes):
@@ -690,7 +692,7 @@ class Canvas(QtWidgets.QWidget):
         # self.removeCurrentShape.emit()
         shape_index = self.shapes.index(shape)
         shape.moveVertexBy(index, pos - point)
-        self.UpdateRenderedShape.emit(shape, shape_index)
+        self.UpdateRenderedShape.emit(shape, shape_index, True)
 
     def boundedMoveShapes(self, shapes, pos):
         if self.outOfPixmap(pos):
@@ -714,7 +716,7 @@ class Canvas(QtWidgets.QWidget):
             for shape in shapes:
                 shape.moveBy(dp)
                 shape_index = self.shapes.index(shape)
-                self.UpdateRenderedShape.emit(shape, shape_index)
+                self.UpdateRenderedShape.emit(shape, shape_index, True)
             self.prevPoint = pos
             return True
         return False
@@ -771,7 +773,7 @@ class Canvas(QtWidgets.QWidget):
     def updateChart(self, pos):
         pos_as_int = [int(pos.x()), int(pos.y())]
         # span = int(width * 1 / self.scale)
-        self.chartUpdate.emit(pos_as_int[1])
+        self.chartUpdate.emit(pos_as_int)
 
     def paintEvent(self, event):
         if not self.pixmap:
@@ -926,6 +928,7 @@ class Canvas(QtWidgets.QWidget):
         if QT5:
             mods = ev.modifiers()
             delta = ev.angleDelta()
+            self.ViewPortSync.emit(ev)
             if QtCore.Qt.ControlModifier == int(mods):
                 # with Ctrl/Command key
                 # zoom

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-#from labelme.utils import model_inference_module
+from labelme.utils import model_inference_module
 from labelme.widgets import dock_title, \
     BrightnessContrastDialog, \
     Canvas, \
@@ -139,6 +139,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plotLim_low = 1
 
         self.plotLim_high = 99.5
+
+        self.setSnappingDialog = None
 
         self.SetSmoothnessDialog = None
 
@@ -369,6 +371,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.chartUpdate.connect(self.updateChart)
         self.canvas.cursorMoved.connect(self.CursorMapping)
         self.canvas.UpdateRenderedShape.connect(self.updateRenderedShapes)
+        self.canvas.ViewPortSync.connect(self.viewPortSync)
         self.canvas.drawRenderedShape.connect(self.drawRenderedShapes)
         self.canvas.removeRenderedShape.connect(self.removeRecentShapes)
         self.setCentralWidget(scrollArea)
@@ -1119,6 +1122,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # Support Functions
 
+    def viewPortSync(self, ev):
+        if self.render_dock.isEnabled():
+            self.renderWidget.wheelEvent(ev)
+        else:
+            return
+
     def noShapes(self):
         return not len(self.labelList)
 
@@ -1783,25 +1792,26 @@ class MainWindow(QtWidgets.QMainWindow):
                                              self.brightnessContrastDialog.clip_level.value()]
 
     def setSnappingDistance(self):
-        dialog = genericValueDialog.editVariablesDialog(
-            self,
-            defaultValues=self.canvas.epsilon,
-            minValue=5,
-            maxValue=30,
-            lowValueText="less tolerance",
-            highValueText="more tolerance",
-            WindowTitle="set snapping distance",
-            helpText="this slider sets the distance (in pixels) for your courser\
-                 to still be able to select the closest point nearby",
-            WindowWidth=400,
-            WindowHeight=150
-        )
-        dialog.exec_()
-        self.canvas.epsilon = dialog.value
-        self._config["shape"]["select"]["epsilon"] = dialog.value
+        if self.setSnappingDialog is None:
+            self.setSnappingDialog = genericValueDialog.editVariablesDialog(
+                self,
+                defaultValues=[self.canvas.epsilon],
+                minValue=[5],
+                maxValue=[30],
+                lowValueText=["less tolerance"],
+                highValueText=["more tolerance"],
+                WindowTitle="set snapping distance",
+                helpText="this slider sets the distance (in pixels) for your courser\
+                    to still be able to select the closest point nearby",
+                WindowWidth=400,
+                WindowHeight=150
+            )
+        self.setSnappingDialog.exec_()
+        self.canvas.epsilon = self.setSnappingDialog.values[0]
+        self._config["shape"]["select"]["epsilon"] = self.setSnappingDialog.values[0]
 
     def setTraceSmoothness(self):
-        if self.SetSmoothnessDialog is not None:
+        if self.SetSmoothnessDialog is None:
             self.SetSmoothnessDialog = genericValueDialog.editVariablesDialog(
                 self,
                 defaultValues=[self.canvas.trace_smothness],
@@ -1867,9 +1877,11 @@ class MainWindow(QtWidgets.QMainWindow):
             prevOptions = deepcopy(self.renderOptionsDialog.values)
         self.renderOptionsDialog.exec_()
 
-        if self.renderOptionsDialog.values != prevOptions and not self.image.isNull():
+        if self.renderOptionsDialog.values != prevOptions and \
+                not self.image.isNull():
             self.shader_name = self.renderOptionsDialog.values[0]
-            self.smooth_render = True if self.renderOptionsDialog.values[1] == "True" else False
+            self.smooth_render = True \
+                if self.renderOptionsDialog.values[1] == "True" else False
             self.update3d_view(rerender=True)
 
     def togglePolygons(self, value):
@@ -1990,11 +2002,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # accumulate from values > 0 since you want to ignore 0
         cum_unique_count = unique_count[1:].cumsum()
         # get the first significant value
-        self.above_thresh = unique_vals[1:][cum_unique_count >
-                                            thresh_for_clipping][0]
-        if self.above_thresh == 0:
-            self.above_thresh = unique_vals[unique_count >
-                                            thresh_for_clipping][1]
+        clip_low_vals = False
+        if clip_low_vals:
+            self.above_thresh = unique_vals[1:][cum_unique_count >
+                                                thresh_for_clipping][0]
+        else:
+            self.above_thresh = unique_vals[1]
+        # if self.above_thresh == 0:
+        #     self.above_thresh = unique_vals[unique_count >
+        #                                     thresh_for_clipping][1]
         valid_img = self.image_as_array
         # Set all non significant values to 0
         # set all non-significant values to 0
@@ -2044,7 +2060,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
 
         self.brightnessContrastDialog = BrightnessContrastDialog(
-            utils.img_data_to_pil(self.imageData),
+            PIL.Image.fromarray(self.image_as_array),
             self.onNewBrightnessContrast,
             parent=self,
         )
@@ -2130,7 +2146,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status(str(self.tr("Loaded %s")) % osp.basename(str(filename)))
         return True
 
-    def updateRenderedShapes(self, shape, index):
+    def updateRenderedShapes(self, shape, index, is_closed):
         # None Index is not possible, that's why -1
         if index == -1:
             if self.temp_rendered_shape is not None:
@@ -2142,7 +2158,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(e)
                 pass
         # import IPython; IPython.embed()
-        points = self._get_interpolated_points(shape)
+        points = self._get_interpolated_points(shape, is_closed=is_closed)
         temp_rendered_shape = (gl.GLLinePlotItem(
             pos=points,
             color=shape.line_color,
@@ -2178,22 +2194,34 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             raise ValueError
         for s in shapes:
-            points = self._get_interpolated_points(s)
+            points = self._get_interpolated_points(s, is_closed=True)
             self.rendererd_shapes.append(gl.GLLinePlotItem(
                 pos=points,
                 color=s.line_color,
                 width=self.polygon_render_width))
             self.renderWidget.addItem(self.rendererd_shapes[-1])
 
-    def _get_interpolated_points(self, shape) -> np.ndarray:
-        expt_array = np.zeros((len(shape.poly_array) + 1, 2), dtype=np.float16)
+    def _get_interpolated_points(self, shape, is_closed) -> np.ndarray:
+
+        expt_array = np.zeros(
+            (len(shape.poly_array) + 1, 2), dtype=np.float16)
         expt_array[0:-1] = shape.poly_array
         expt_array[-1] = shape.poly_array[0]
         diff = expt_array[1:] - shape.poly_array
-        circum = np.array([np.sqrt(i.dot(i)).astype(np.uint16) for i in diff])
+
+        if is_closed:
+            circum = np.array([np.sqrt(i.dot(i)).astype(np.uint16)
+                               for i in diff])
+        else:
+            circum = np.array([np.sqrt(i.dot(i)).astype(np.uint16)
+                               for i in diff[:-1]])
         points = np.zeros((circum.sum(), 3))
 
-        for i, p in enumerate(expt_array[:-1]):
+        if is_closed:
+            enum_limit = -1
+        else:
+            enum_limit = -2
+        for i, p in enumerate(expt_array[:enum_limit]):
             for sample in range(circum[i]):
                 norm_p = diff[i] / circum[i]
                 accum_cnt = circum[:i].sum()
@@ -2202,9 +2230,9 @@ class MainWindow(QtWidgets.QMainWindow):
                                               cur_p[0],
                                               self.cached_image[
                                                   int(cur_p[1]) -
-                    self.render_offset[0],
+                                                  self.render_offset[0],
                                                   int(cur_p[0]) - self.render_offset[1]]
-                )
+                                              )
         points[:, :2] = points[:, :2] - self.render_offset
         return points
 
@@ -2225,49 +2253,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status(f"current Zoom Level {self.zoomWidget.value()} %")
 
     def CursorMapping(self, pos: QtCore.QPointF):
-        if self.vert_crosshair is not None:
-            try:
-                self.renderWidget.removeItem(self.vert_crosshair)
-                self.renderWidget.removeItem(self.hor_crosshair)
-            except ValueError:
-                pass
+        if self.render_dock.isEnabled():
+            if self.vert_crosshair is not None:
+                try:
+                    self.renderWidget.removeItem(self.vert_crosshair)
+                    self.renderWidget.removeItem(self.hor_crosshair)
+                except ValueError:
+                    pass
 
-        img_shape = self.image_as_array.shape
-        if (pos.y() < 0 or pos.x() < 0) or\
-           (pos.y() > img_shape[0] or pos.x() > img_shape[1]):
-            return
-        self.crosshair_color = (1.0, 1.0, 0.0, 1.0)
-        # self.crosshair_color = "darkblue"
-        self.crosshair_width = 5.0
-        vert_points = np.zeros((20, 3))
-        hor_points = np.zeros((20, 3))
-        for i, offset in enumerate(range(-10, 10)):
-            try:
-                vert_points[i] = pos.y(), pos.x() + offset,\
-                    self.cached_image[int(pos.y() - self.render_offset[0]),
-                                      int(pos.x() - self.render_offset[1]) + offset] + 2
-                hor_points[i] = pos.y() + offset, pos.x(),\
-                    self.cached_image[int(pos.y() - self.render_offset[0]) + offset,
-                                      int(pos.x() - self.render_offset[1])] + 2
-            except IndexError:
-                vert_points[i] = pos.y(), pos.x() + offset, 0
-                hor_points[i] = pos.y() + offset, pos.x(), 0
-        vert_points[:, :2] = vert_points[:, :2] - self.render_offset
-        hor_points[:, :2] = hor_points[:, :2] - self.render_offset
-        self.vert_crosshair = pg.opengl.GLLinePlotItem(
-            pos=vert_points,
-            color=self.crosshair_color,
-            width=self.crosshair_width
-        )
-        self.hor_crosshair = pg.opengl.GLLinePlotItem(
-            pos=hor_points,
-            color=self.crosshair_color,
-            width=self.crosshair_width
-        )
-        self.renderWidget.addItem(self.vert_crosshair)
-        self.renderWidget.addItem(self.hor_crosshair)
+            img_shape = self.image_as_array.shape
+            if (pos.y() < 0 or pos.x() < 0) or\
+            (pos.y() > img_shape[0] or pos.x() > img_shape[1]):
+                return
+            self.crosshair_color = (1.0, 1.0, 0.0, 1.0)
+            # self.crosshair_color = "darkblue"
+            self.crosshair_width = 5.0
+            vert_points = np.zeros((20, 3))
+            hor_points = np.zeros((20, 3))
+            for i, offset in enumerate(range(-10, 10)):
+                try:
+                    vert_points[i] = pos.y(), pos.x() + offset,\
+                        self.cached_image[int(pos.y() - self.render_offset[0]),
+                                        int(pos.x() - self.render_offset[1]) + offset] + 2
+                    hor_points[i] = pos.y() + offset, pos.x(),\
+                        self.cached_image[int(pos.y() - self.render_offset[0]) + offset,
+                                        int(pos.x() - self.render_offset[1])] + 2
+                except IndexError:
+                    vert_points[i] = pos.y(), pos.x() + offset, 0
+                    hor_points[i] = pos.y() + offset, pos.x(), 0
+            vert_points[:, :2] = vert_points[:, :2] - self.render_offset
+            hor_points[:, :2] = hor_points[:, :2] - self.render_offset
+            self.vert_crosshair = pg.opengl.GLLinePlotItem(
+                pos=vert_points,
+                color=self.crosshair_color,
+                width=self.crosshair_width
+            )
+            self.hor_crosshair = pg.opengl.GLLinePlotItem(
+                pos=hor_points,
+                color=self.crosshair_color,
+                width=self.crosshair_width
+            )
+            self.renderWidget.addItem(self.vert_crosshair)
+            self.renderWidget.addItem(self.hor_crosshair)
+        self.chart_widget.updateXPos(pos.x() - self.render_offset[1])
 
-    def updateChart(self, y_level=None):
+    def updateChart(self, pos=None):
         maxScrollValue = self.scrollBars[Qt.Horizontal].maximum()
         horizontalOffset = maxScrollValue - \
             self.scrollBars[Qt.Horizontal].value()
@@ -2288,12 +2318,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.normalized_img, self.percent_offset_low + self.plotLim_low)
 
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
-        if y_level is not None:
-            self.y_level = y_level
+        # if y_level is not None:
+        self.y_level = pos[1] if pos is not None else self.y_level
         line = self.normalized_img[self.y_level -
                                    self.render_offset[0], self.start:self.end]
         self.chart_widget.update_plot(
-            [max(percent_min, self.above_thresh), self.percent_max], line, start=self.start)
+            # render offset has the convention of (y,x) whereas pos hat (x,y)
+            x_pos=int(pos[0] - self.render_offset[1]) if pos is not None else None,
+            y_lim=[max(percent_min, self.above_thresh), self.percent_max],
+            x_vals=line,
+            start=self.start)
 
     def adjustScale(self, initial=False):
         # TODO set the default zoom setting in config instead
@@ -2467,8 +2501,8 @@ class MainWindow(QtWidgets.QMainWindow):
             z_scale=1,
             shader=self.shader_name,
             smooth=self.smooth_render)
-        self.drawRenderedShapes("all")
         self.renderWidget.addItem(self.curPlot)
+        self.drawRenderedShapes("all")
 
     def changeOutputDirDialog(self, _value=False):
         default_output_dir = self.output_dir
@@ -2741,41 +2775,65 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cur_model_name = self._config["ai_config"]["default_model"] + ".temp"
             self.cur_model_path = self.model_folder_path.joinpath(
                 self.cur_model_name)
+            if self.cur_model_path.with_suffix(".bin").exists():
+                mn = self._config["ai_config"]["default_model"]
+                self.errorMessage(
+                    "Framework not supported",
+                    f"Openvino Modelframe with model:'{mn}' is currently not " +
+                    f"supported please use onnx instead. Affected folder: '{self.model_folder_path}'"
+                )
+                return
+            elif self.cur_model_path.with_suffix(".onnx").exists():
+                model_framework = "onnx"
+            else:
+                mn = self._config["ai_config"]["default_model"]
+                self.errorMessage(
+                    "Files not found",
+                    f"Model with name '{mn}' can not " +
+                    f"be found at: '{self.model_folder_path}'"
+                )
+                return
         if self.model is None:
             self.model = model_inference_module.GeneralModel(
                 self.cur_model_path,
-                "ov",
+                model_framework,
                 overlaps=[128, 128]
             )
         threshold = 0.5
-        prediction = model_inference_module.predict(
+        precision = 0.0007
+        prediction, excProvider, inferTime = model_inference_module.predict(
             self.image_as_array, self.model)
-        shape_points = utils.image.polygonfit(prediction, precision=0.002)
+        print(self._config["ai_config"]["default_model"])
+        shape_points = utils.image.polygonfit(prediction, precision=precision)
+        self.status(
+            f"sucessfully ran model with {excProvider} Backend in {inferTime} seconds")
         shapes = []
         for points in shape_points:
             shape = Shape(
-                label=f"auto_gen_{self.cur_model_name}",
+                label="weld",
                 shape_type="polygon",
-                group_id=threshold,
+                group_id=None,
                 vertex_epsilon=self.canvas.epsilon / 10,
-                flags={})
-            center = points.mean(axis=0)
-            shiftPoints = points - center
-            polarPoints = np.empty((points.shape[0], 2), dtype=np.float32)
-            i = 0
-            for x, y in zip(shiftPoints[:, 0, 0], shiftPoints[:, 0, 1]):
-                polarPoints[i, 0] = np.hypot(x, y)
-                polarPoints[i, 1] = np.arctan2(y, x)
-                i += 1
-            # sort the polar transformed points by angle
-            polarPoints = polarPoints[polarPoints[:, 1].argsort()]
-            shiftPoints[:, 0, 1] = polarPoints[:, 0] * np.sin(polarPoints[:, 1])
-            shiftPoints[:, 0, 0] = polarPoints[:, 0] * np.cos(polarPoints[:, 1])
-            SortedPoints = (shiftPoints[:, 0, :] + center).astype(
-                np.uint32)
-            sP = pd.DataFrame(SortedPoints)
-            sP.drop_duplicates(inplace=True)
-            SortedPoints = sP.to_numpy()
+                flags={"Modelname": self.cur_model_name,
+                       "threshold": threshold,
+                       "Polygon_approx_precision": precision})
+            # center = points.mean(axis=0)
+            # shiftPoints = points - center
+            # polarPoints = np.empty((points.shape[0], 2), dtype=np.float32)
+            # i = 0
+            # for x, y in zip(shiftPoints[:, 0, 0], shiftPoints[:, 0, 1]):
+            #     polarPoints[i, 0] = np.hypot(x, y)
+            #     polarPoints[i, 1] = np.arctan2(y, x)
+            #     i += 1
+            # # sort the polar transformed points by angle
+            # polarPoints = polarPoints[polarPoints[:, 1].argsort()]
+            # shiftPoints[:, 0, 1] = polarPoints[:, 0] * np.sin(polarPoints[:, # 1])
+            # shiftPoints[:, 0, 0] = polarPoints[:, 0] * np.cos(polarPoints[:, # 1])
+            # SortedPoints = (shiftPoints[:, 0, :] + center).astype(
+            #     np.uint32)
+            # sP = pd.DataFrame(SortedPoints)
+            # sP.drop_duplicates(inplace=True)
+            # SortedPoints = sP.to_numpy()
             for x, y in zip(points[:, 0, 0], points[:, 0, 1]):
                 shape.addPoint(QtCore.QPointF(x, y))
             shape.close()

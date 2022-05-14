@@ -4,6 +4,8 @@ import io
 import json
 import os.path as osp
 import pathlib as pl
+
+import cv2
 from labelme import __version__
 from labelme.logger import logger
 from labelme import PY2
@@ -54,6 +56,15 @@ class LabelFile(object):
                 image_pil = PIL.Image.fromarray(img)
                 is_8_bit = False
             
+        elif pl.WindowsPath(filename).suffix in [".tif", ".png"]:
+            img = cv2.imread(str(filename), cv2.IMREAD_ANYDEPTH)
+            image_pil = PIL.Image.fromarray(img)
+            if img.dtype == "uint16":
+                is_8_bit = False
+            else:
+                is_8_bit = True
+            del img
+        
         else:
             try:
                 image_pil = PIL.Image.open(filename)
