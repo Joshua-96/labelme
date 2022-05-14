@@ -34,17 +34,18 @@ def predict_default(tensor: np.ndarray, model):
 def transform_image_to_framework(framework=None, image=None, max_value=4095, shift=0, channels=1):
     if framework == "ov":
         tensor = np.zeros([1, channels, image.shape[0], image.shape[1]]).astype(np.float32)
-    elif framework == "tf":
-        tensor = np.zeros([1, image.shape[0], image.shape[1], 1]).astype(np.float32)
+    elif framework == "tf" or framework == "onnx":
+        tensor = np.zeros([channels, image.shape[-2], image.shape[-1], 1]).astype(np.float32)
     elif framework == "tflite":
         tensor = np.zeros([1, image.shape[0], image.shape[1], channels]).astype(np.float32)
 
     if framework == "ov":
-        tensor[0, 0, :, :] = (image / max_value)
-    elif framework == "tf":
-        tensor[0, :image.shape[0], :image.shape[1], 0] = image / max_value
+        tensor[:, 0, :, :] = (image - shift) / max_value
+    elif framework == "tf" or framework == "onnx":
+        tensor[:, :image.shape[-2], :image.shape[-1], 0] = np.where(
+            image != 0, (image - shift) / (max_value - shift), image)
     elif framework == "tflite":
-        tensor[0, :, :, 0] = image / max_value
+        tensor[:, :, :, 0] = (image - shift) / max_value
     return tensor
 
 
@@ -52,10 +53,13 @@ def invert_transform(framework=None, tensor=None, img_shape=None, max_value=255,
     if framework == "ov":
         # tensor = tensor.buffer
         image = ((tensor[:, 0]).reshape([img_shape[0], img_shape[1]])) * max_value
-    elif framework == "tf":
-        image = tensor[0].reshape([img_shape[0], img_shape[1]]) * max_value
+    elif framework == "tf" or framework == "onnx":
+        image = tensor.reshape([img_shape[0], img_shape[1]]) * max_value
     if max_value == 255:
         image = image.astype(np.uint8)
     elif max_value > 255:
         image = image.astype(np.uint16)
     return image
+
+def normalize_non_zero(image):
+    pass
