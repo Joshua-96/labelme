@@ -140,7 +140,9 @@ class InferenceHandler(object):
         self.img_shape = img.shape
         zero_img = self._get_zero_img()
         self.pred_stack = np.zeros(
-            (self.crop_shape[0], self.crop_shape[1], (self.n_splits_x + 1) * (self.n_splits_y + 1)))
+            shape=(self.crop_shape[0],
+                   self.crop_shape[1],
+                   (self.n_splits_x + 1) * (self.n_splits_y + 1)))
         zero_img[:self.img_shape[0], :self.img_shape[1]] = img
         self.padded_img = zero_img
         del zero_img
@@ -163,8 +165,7 @@ class InferenceHandler(object):
             increment_y = i * (self.crop_shape[0] - self.overlaps[0])
             for j in range(self.n_splits_x + 1):
                 increment_x = j * (self.crop_shape[1] - self.overlaps[1])
-                self.img_stack[(j + i * (self.n_splits_x + 1)), :, :] = self.padded_img[increment_y:increment_y +
-                                                                                        self.crop_shape[0], increment_x:increment_x + self.crop_shape[1]]
+                self.img_stack[(j + i * (self.n_splits_x + 1)), :, :] = self.padded_img[increment_y:increment_y + self.crop_shape[0], increment_x:increment_x + self.crop_shape[1]]
         return self.img_stack
 
     def set_stack_element(self, prediction, index):
@@ -209,8 +210,8 @@ class InferenceHandler(object):
             else:
                 offset_y = 0
 
-            slice_joined_y = slice(current_row * (self.crop_shape[0] - half_overlaps[0]) - offset_y, current_row * (
-                self.crop_shape[0] - half_overlaps[0]) + y_span - offset_y)
+            slice_joined_y = slice(
+                current_row * (self.crop_shape[0] - half_overlaps[0]) - offset_y, current_row * (self.crop_shape[0] - half_overlaps[0]) + y_span - offset_y)
             slice_joined_x = slice(current_col * (self.crop_shape[1] - half_overlaps[1]), current_col * (
                 self.crop_shape[1] - half_overlaps[1]) + x_span)
             self.joined_pred[slice_joined_y,
