@@ -47,14 +47,14 @@ class LabelFile(object):
     @staticmethod
     def load_image_file(filename):
         if pl.WindowsPath(filename).suffix == ".bmp":
-            try:
-                image_pil = PIL.Image.open(filename)
-                is_8_bit = True
-            except IOError:
-                from utils.readAWR_bmp import readAWR_bmp
-                img = readAWR_bmp(filename)
-                image_pil = PIL.Image.fromarray(img)
-                is_8_bit = False
+            # try:
+            #     image_pil = PIL.Image.open(filename)
+            #     is_8_bit = True
+            # except IOError:
+            from utils.readAWR_bmp import readAWR_bmp
+            img = readAWR_bmp(filename)
+            image_pil = PIL.Image.fromarray(img)
+            is_8_bit = False
             
         elif pl.WindowsPath(filename).suffix in [".tif", ".png"]:
             img = cv2.imread(str(filename), cv2.IMREAD_ANYDEPTH)

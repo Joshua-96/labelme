@@ -68,6 +68,10 @@ LABEL_COLORMAP = label_colormap()
 
 class MainWindow(QtWidgets.QMainWindow):
 
+    # set the scroll amount of horizontal scroll vs vertical scroll
+    HORIZONTAL_SCROLL_RATIO = 0.25
+    # higher value translates to more area scrolled per increment
+    SCROLL_SENSITIVITY = 0.1
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
 
     def __init__(
@@ -181,10 +185,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.init_render_Camera_params = {"elevation": 30.0,
                                           "distance": 2500,
                                           "fov": 60,
-                                          "center": QtGui.QVector3D(2500, 0, 0),
+                                          "center": QtGui.QVector3D(1000, 0, 80),
                                           "azimuth" : 20,
                                           "rotation": QtGui.QQuaternion(
-                                              1.0, 0.0, 0.0, 0.0)
+                                              0.0, 0.0, 0.0, 0.0),
+                                          "viewport": None,
+                                          "rotationMethod": "euler"
                                           }
 
         self.temp_rendered_shape = None
@@ -337,6 +343,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.render_dock = QtWidgets.QDockWidget(self.tr(u"3d render"), self)
         self.render_dock.setObjectName(u"render")
         self.renderWidget = cust_GLViewWidget()
+        self.renderWidget.requestNextImage.connect(self.openNextImg)
+        self.renderWidget.requestPreviousImage.connect(self.openPrevImg)
         # self.renderWidget.setCameraPosition(distance=200)
         # self.renderWidget.setCameraParams(elevation=-1000)
         self.renderWidget.addItem(render_3d.draw_grid(1000))
@@ -374,6 +382,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.ViewPortSync.connect(self.viewPortSync)
         self.canvas.drawRenderedShape.connect(self.drawRenderedShapes)
         self.canvas.removeRenderedShape.connect(self.removeRecentShapes)
+        self.canvas.requestNextImage.connect(self.openNextImg)
+        self.canvas.requestPreviousImage.connect(self.openPrevImg)
         self.setCentralWidget(scrollArea)
 
         features = QtWidgets.QDockWidget.DockWidgetFeatures()
@@ -687,9 +697,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ai_infer,
             enabled=True,
             tip=self.tr("infer masks with specified model")
-
-
         )
+
+        algin_view = action(
+            self.tr("algin_view"),
+            self.align_view,
+            enabled=True,
+            tip=self.tr("center 3d render in the same postion as the 2d view")
+        ) 
 
         zoom = QtWidgets.QWidgetAction(self)
         zoom.setDefaultWidget(self.zoomWidget)
@@ -1034,6 +1049,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # zoom,
             fitWidth,
             ai_infer,
+            algin_view,
         )
 
         self.statusBar().showMessage(str(self.tr("%s started.")) % __appname__)
@@ -1122,9 +1138,68 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # Support Functions
 
+    @staticmethod
+    def _isScrollable(slider) -> list:
+        """ analyse if scrolling upwards/downwards or left/right 
+        is possible returns list of bool values in that order"""
+        max_pos = slider.maximum()
+        cur_pos = slider.value() 
+        
+        # slider is not scroallble
+        if max_pos == 0:
+            return False, False
+        # slider is in end-position
+        elif cur_pos == max_pos:
+            return True, False
+        # slider is in start-postion
+        elif cur_pos == 0:
+            return False, True
+        else:
+            return True, True
+
     def viewPortSync(self, ev):
+        if self.image.isNull():
+            return
+        
         if self.render_dock.isEnabled():
-            self.renderWidget.wheelEvent(ev)
+            bars = self.scrollBars
+            scroll_up, scroll_down = self._isScrollable(bars[2])
+            scroll_left, scroll_right = self._isScrollable(bars[1])
+
+            if QtCore.Qt.ShiftModifier == int(ev.modifiers()):
+                increment_x = bars[1].singleStep() *\
+                    ev.angleDelta().y() *\
+                    self.HORIZONTAL_SCROLL_RATIO * self.SCROLL_SENSITIVITY
+                increment_y = 0
+            else:
+                increment_x = bars[1].singleStep() *\
+                    ev.angleDelta().x() *\
+                    self.HORIZONTAL_SCROLL_RATIO * self.SCROLL_SENSITIVITY
+                increment_y = bars[2].singleStep() *\
+                    ev.angleDelta().y() *\
+                    self.SCROLL_SENSITIVITY
+            
+            increment_x = int(scroll_left) * increment_x if increment_x > 0\
+                else increment_x
+            increment_x = int(scroll_right) * increment_x if increment_x < 0\
+                else increment_x
+
+            # reassign increment_x to increment_y to keep the wheel event logic
+            # consistent
+            if QtCore.Qt.ShiftModifier == int(ev.modifiers()):
+                increment_y = increment_x
+
+            increment_y = int(scroll_up) * increment_y if increment_y > 0\
+                else increment_y
+            increment_y = int(scroll_down) * increment_y if increment_y < 0\
+                else increment_y
+
+            mid, span = self._getCenterViewPixel([increment_x,
+                                                  increment_y])
+            self.renderWidget.wheelEvent(
+                ev,
+                diff_x=mid[0] - span[0] // 2,
+                diff_y=mid[1] - span[1] // 2)
         else:
             return
 
@@ -1626,6 +1701,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def labelItemChanged(self, item):
         shape = item.shape()
+        # always deselect shape if not visible
+        if not item.checkState():
+            shape.selected = False
         self.canvas.setShapeVisible(shape, item.checkState() == Qt.Checked)
 
     def labelOrderChanged(self):
@@ -1736,9 +1814,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._config["keep_prev_scale"] = enabled
         self.actions.keepPrevScale.setChecked(enabled)
 
-    def onNewBrightnessContrast(self, qimage):
+    def onNewBrightnessContrast(self, imageArray: np.ndarray):
+        if imageArray.dtype.name == "uint8":
+            imageArray = (imageArray * 255).astype("uint16")
+            format_param = QtGui.QImage.Format_Indexed8
+        
+        format_param = QtGui.QImage.Format_Grayscale16
+        if imageArray.dtype not in ["uint8", "uint16"]:
+            raise ValueError(f"array has not the type expected,\
+                type given {imageArray.dtype}")
+        qimage = QtGui.QImage(
+            imageArray.data,
+            imageArray.shape[1],
+            imageArray.shape[0],
+            format_param
+            )
+        pix = QtGui.QPixmap.fromImage(qimage)
         self.canvas.loadPixmap(
-            QtGui.QPixmap.fromImage(qimage), clear_shapes=False
+            pix, clear_shapes=False
         )
 
     def addFlag(self):
@@ -1774,6 +1867,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.onNewBrightnessContrast,
                 parent=self,
             )
+            self.brightnessContrastDialog.updateImage.connect(
+                self.onNewBrightnessContrast)
         brightness, contrast = self.brightnessContrast_values.get(
             self.filename, (None, None)
         )
@@ -1787,9 +1882,10 @@ class MainWindow(QtWidgets.QMainWindow):
         contrast = self.brightnessContrastDialog.slider_contrast.value()
         self.brightnessContrast_values[self.filename] = (brightness, contrast)
         self.global_sobel_filter_enabled = self.brightnessContrastDialog.apply_sobel_filter_checkbox.isChecked()
-        self.global_sobel_filter_settings = [self.brightnessContrastDialog.kernelSize.value(),
-                                             self.brightnessContrastDialog.derivative.value(),
-                                             self.brightnessContrastDialog.clip_level.value()]
+        self.global_sobel_filter_settings = [
+            self.brightnessContrastDialog.kernelSize.value(),
+            self.brightnessContrastDialog.derivative.value(),
+            self.brightnessContrastDialog.clip_level.value()]
 
     def setSnappingDistance(self):
         if self.setSnappingDialog is None:
@@ -2014,16 +2110,18 @@ class MainWindow(QtWidgets.QMainWindow):
         valid_img = self.image_as_array
         # Set all non significant values to 0
         # set all non-significant values to 0
-        valid_img[valid_img < self.above_thresh] = 0
-        img_not_zero = self.image_as_array.nonzero()
+        # valid_img[valid_img < self.above_thresh] = 0
+        # img_not_zero = self.image_as_array.nonzero()
         # get offset between 2d and 3d view
-        self.render_offset = np.array(
-            [img_not_zero[0].min(), img_not_zero[1].min()])
+        # self.render_offset = np.array(
+        #     [img_not_zero[0].min(), img_not_zero[1].min()])
+
+        self.render_offset = np.array([0, 0])
 
         # crop all-zero rows and columns
 
-        valid_img = valid_img[img_not_zero[0].min():img_not_zero[0].max(),
-                              img_not_zero[1].min():img_not_zero[1].max()]
+        # valid_img = valid_img[img_not_zero[0].min():img_not_zero[0].max(),
+        #                       img_not_zero[1].min():img_not_zero[1].max()]
         for i in range(1, 100):
             percent_min = np.percentile(valid_img, i)
             if percent_min != 0 :
@@ -2047,9 +2145,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 (valid_img.max() - valid_img.min()) + valid_img.min()
         # FIXME some normalization procedure
 
+        self.apparent_max = valid_img.max()
+        self.apparent_min = self.above_thresh
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
 
         if self.render_dock.isEnabled():
+            viewPortCenter = self.normalized_img.shape[0] / 2
+            
+            self.init_render_Camera_params["center"] = QtGui.QVector3D(
+                viewPortCenter,
+                0,
+                80)
+            self.renderWidget.reset(self.init_render_Camera_params)
             self.update3d_view()
 
         self.canvas.imgDim = [image.height(), image.width()]
@@ -2064,7 +2171,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.onNewBrightnessContrast,
             parent=self,
         )
-
+        self.brightnessContrastDialog.updateImage.connect(
+                self.onNewBrightnessContrast)
         self.brightnessContrastDialog.call_normalize()
         flags = {k: False for k in self._config["flags"] or []}
         try:
@@ -2226,13 +2334,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 norm_p = diff[i] / circum[i]
                 accum_cnt = circum[:i].sum()
                 cur_p = p + sample * norm_p
-                points[accum_cnt + sample] = (cur_p[1],
-                                              cur_p[0],
-                                              self.cached_image[
-                                                  int(cur_p[1]) -
-                                                  self.render_offset[0],
-                                                  int(cur_p[0]) - self.render_offset[1]]
-                                              )
+                points[accum_cnt + sample] = (
+                    cur_p[1],
+                    cur_p[0],
+                    self.cached_image[
+                        int(cur_p[1]) -
+                        self.render_offset[0],
+                        int(cur_p[0]) - self.render_offset[1]]
+                )
         points[:, :2] = points[:, :2] - self.render_offset
         return points
 
@@ -2260,29 +2369,31 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.renderWidget.removeItem(self.hor_crosshair)
                 except ValueError:
                     pass
-
             img_shape = self.image_as_array.shape
             if (pos.y() < 0 or pos.x() < 0) or\
-            (pos.y() > img_shape[0] or pos.x() > img_shape[1]):
+                    (pos.y() > img_shape[0] or pos.x() > img_shape[1]):
                 return
             self.crosshair_color = (1.0, 1.0, 0.0, 1.0)
-            # self.crosshair_color = "darkblue"
             self.crosshair_width = 5.0
-            vert_points = np.zeros((20, 3))
-            hor_points = np.zeros((20, 3))
-            for i, offset in enumerate(range(-10, 10)):
-                try:
-                    vert_points[i] = pos.y(), pos.x() + offset,\
-                        self.cached_image[int(pos.y() - self.render_offset[0]),
-                                        int(pos.x() - self.render_offset[1]) + offset] + 2
-                    hor_points[i] = pos.y() + offset, pos.x(),\
-                        self.cached_image[int(pos.y() - self.render_offset[0]) + offset,
-                                        int(pos.x() - self.render_offset[1])] + 2
-                except IndexError:
-                    vert_points[i] = pos.y(), pos.x() + offset, 0
-                    hor_points[i] = pos.y() + offset, pos.x(), 0
-            vert_points[:, :2] = vert_points[:, :2] - self.render_offset
-            hor_points[:, :2] = hor_points[:, :2] - self.render_offset
+            # self.crosshair_color = "darkblue"
+            x_pos = int(pos.x()) - self.render_offset[1]
+            y_pos = int(pos.y()) - self.render_offset[0]
+            try:
+                vert_points = np.zeros((20, 3), dtype=np.uint16)
+                vert_points[:, 0] = np.arange(-10, 10, 1, dtype=np.uint16) +\
+                    y_pos
+                vert_points[:, 1] = np.ones((20), dtype=np.uint16) * x_pos
+                vert_points[:, 2] = self.cached_image[
+                    vert_points[0, 0]:vert_points[-1, 0] + 1, x_pos]
+                hor_points = np.zeros((20, 3),dtype=np.uint16)
+                hor_points[:, 1] = np.arange(-10, 10, 1, dtype=np.uint16) +\
+                    x_pos
+                hor_points[:, 0] = np.ones((20), dtype=np.uint16) * y_pos
+                hor_points[:, 2] = self.cached_image[
+                    y_pos, hor_points[0, 1]:hor_points[-1, 1] + 1]
+            except (ValueError, IndexError):
+                return
+            
             self.vert_crosshair = pg.opengl.GLLinePlotItem(
                 pos=vert_points,
                 color=self.crosshair_color,
@@ -2296,37 +2407,58 @@ class MainWindow(QtWidgets.QMainWindow):
             self.renderWidget.addItem(self.vert_crosshair)
             self.renderWidget.addItem(self.hor_crosshair)
         self.chart_widget.updateXPos(pos.x() - self.render_offset[1])
+        self.status(f"cursor Pos X:{int(pos.x())}, Y:{int(pos.y())}, Z:{self.image_as_array[int(pos.y()), int(pos.x())]}")
+
+    def _getCenterViewPixel(self, scroll_value):
+        bars = [self.scrollBars[1], self.scrollBars[2]]
+        zooms = [self.scaleFitWidth(), self.scaleFitWindow()]
+        currentZoom = self.zoomWidget.value()
+        img_shape = [self.image_as_array.shape[1], self.image_as_array.shape[0]]
+        mid = [None, None]
+        spans = [None, None]
+        for i, bar in enumerate(bars):
+            bar_max = bar.maximum()
+            effectiveZoom = currentZoom / (100 * zooms[i])
+            spans[i] = int(img_shape[i] / effectiveZoom)
+            offset = bar_max - scroll_value[i]
+            if bar_max == 0:
+                mid[i] = spans[i] / 2
+                continue
+            scroll_ratio = offset / bar_max
+            mid[i] = int(spans[i] / 2) + int((img_shape[i] - spans[i]) *
+                                             (1 - scroll_ratio))
+        return mid, spans
 
     def updateChart(self, pos=None):
-        maxScrollValue = self.scrollBars[Qt.Horizontal].maximum()
-        horizontalOffset = maxScrollValue - \
-            self.scrollBars[Qt.Horizontal].value()
-        fitWidthZoom = self.scaleFitWidth()
-        currentZoom = self.zoomWidget.value()
-        effectiveZoom = currentZoom / (100 * fitWidthZoom)
-        span = self.image_as_array.shape[1]
-        if span is not None:
-            span = int(span / effectiveZoom)
-            if maxScrollValue > 0:
-                mid = int(span / 2) + int((self.canvas.pixmap.width() - span) *
-                                          (1 - (horizontalOffset / maxScrollValue)))
-            else:
-                mid = int(span / 2)
-            self.end = mid + int(span / 2)
-            self.start = mid - int(span / 2)
+
+        increment_x = self.scrollBars[1].value()
+        increment_y = self.scrollBars[2].value()
+
+        mid, span = self._getCenterViewPixel([increment_x,
+                                              increment_y])
+        self.end = int(mid[0]) + int(span[0] / 2)
+        self.start = int(mid[0]) - int(span[0] / 2)
+        scale_factor = self.apparent_max - self.apparent_min
+        offset = self.apparent_min
         percent_min = np.percentile(
-            self.normalized_img, self.percent_offset_low + self.plotLim_low)
+            self.normalized_img, self.percent_offset_low + self.plotLim_low) *\
+            scale_factor + offset
 
         self.percent_max = np.percentile(self.normalized_img, self.plotLim_high)
+        y_lim_upper = self.percent_max * scale_factor + offset
         # if y_level is not None:
         self.y_level = pos[1] if pos is not None else self.y_level
         line = self.normalized_img[self.y_level -
                                    self.render_offset[0], self.start:self.end]
+        y_lim_lower = max(percent_min,
+                          self.above_thresh * scale_factor + offset)
         self.chart_widget.update_plot(
             # render offset has the convention of (y,x) whereas pos hat (x,y)
-            x_pos=int(pos[0] - self.render_offset[1]) if pos is not None else None,
-            y_lim=[max(percent_min, self.above_thresh), self.percent_max],
-            x_vals=line,
+            x_pos=int(pos[0] - self.render_offset[1]) if pos is not None\
+            else None,
+            y_lim=[y_lim_lower, y_lim_upper],
+            x_vals=(line * scale_factor + offset
+                    + self.apparent_min).astype(np.uint16),
             start=self.start)
 
     def adjustScale(self, initial=False):
@@ -2425,6 +2557,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.loadFile(filename)
 
         self._config["keep_prev"] = keep_prev
+        self.align_view()
 
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
@@ -2455,6 +2588,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.loadFile(self.filename)
 
         self._config["keep_prev"] = keep_prev
+        self.align_view()
 
     def openFile(self, _value=False):
         if not self.mayContinue():
@@ -2767,6 +2901,21 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.targetDirPath = targetDirPath
         self.importDirImages(targetDirPath)
+
+    def align_view(self):
+        # get center position of 2d viewport
+        mid, span = self._getCenterViewPixel([self.scrollBars[1].value(),
+                                              self.scrollBars[2].value()])
+        distance = 1/self.zoomWidget.value() * 150000
+        if self.render_dock.isEnabled():
+            z_offset = self.renderWidget.cameraParams()["center"][2]
+            self.renderWidget.setCameraPosition(pos=QtGui.QVector3D(
+                mid[1] - self.render_offset[0],
+                mid[0] - self.render_offset[1],
+                z_offset),
+            azimuth=0,
+            elevation=89.0,
+            distance=distance)
 
     def ai_infer(self):
         if self.model is None:

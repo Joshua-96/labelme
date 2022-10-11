@@ -105,11 +105,11 @@ def initShaders():
                 varying vec3 normal;
                 void main() {
                     float p = dot(normal, normalize(vec3(1.0, -1.0, -1.0)));
-                    p = p < 0. ? 0. : p * 0.8;
+                    p = p < 0. ? 0. : p * 0.9;
                     vec4 color = gl_Color;
-                    color.x = color.x * (0.2 + p);
-                    color.y = color.y * (0.2 + p);
-                    color.z = color.z * (0.2 + p);
+                    color.x = color.x * (0.1 + p);
+                    color.y = color.y * (0.1 + p);
+                    color.z = color.z * (0.1 + p);
                     gl_FragColor = color;
                 }
             """)

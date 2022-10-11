@@ -30,6 +30,8 @@ class Canvas(QtWidgets.QWidget):
     chartUpdate = QtCore.Signal(list)
     cursorMoved = QtCore.Signal(QtCore.QPointF)
     selectionChanged = QtCore.Signal(list)
+    requestNextImage = QtCore.Signal()
+    requestPreviousImage = QtCore.Signal()
     UpdateRenderedShape = QtCore.Signal(Shape, int, bool)
     ViewPortSync = QtCore.Signal(QtGui.QWheelEvent)
     drawRenderedShape = QtCore.Signal(str)
@@ -104,6 +106,7 @@ class Canvas(QtWidgets.QWidget):
         self.ZeroImg = None
         self.ImgDim = None
         self.distMap_crit = None
+        self.keep_selected = False
 
     def init_poly_array(self):
         for s in self.shapes:
@@ -253,7 +256,8 @@ class Canvas(QtWidgets.QWidget):
                 self.line[1] = pos
             if self.createMode == "trace":
                 length = QtCore.QLineF(self.line[1], self.line[0]).length()
-                if length > self.trace_smothness and not self.pause_tracing:
+                if length > self.trace_smothness \
+                        and int(ev.modifiers()) == QtCore.Qt.ShiftModifier:
                     self.current.addPoint(self.line[1])
                     self.UpdateRenderedShape.emit(self.current, -1, False)
                     self.line[0] = self.current[-1]
@@ -274,7 +278,8 @@ class Canvas(QtWidgets.QWidget):
             return
 
         # Polygon copy moving.
-        if QtCore.Qt.RightButton & ev.buttons():
+        if QtCore.Qt.RightButton & ev.buttons() and \
+                int(ev.modifiers()) == QtCore.Qt.ControlModifier:
             if self.selectedShapesCopy and self.prevPoint:
                 self.overrideCursor(CURSOR_MOVE)
                 self.boundedMoveShapes(self.selectedShapesCopy, pos)
@@ -289,10 +294,12 @@ class Canvas(QtWidgets.QWidget):
         # Polygon/Vertex moving.
         if QtCore.Qt.LeftButton & ev.buttons():
             if self.selectedVertex():
+                self.overrideCursor(CURSOR_MOVE)
                 self.boundedMoveVertex(pos)
                 self.repaint()
                 self.movingShape = True
-            elif self.selectedShapes and self.prevPoint:
+            elif self.selectedShapes and self.prevPoint and \
+                    int(ev.modifiers()) == QtCore.Qt.ControlModifier:
                 self.overrideCursor(CURSOR_MOVE)
                 self.boundedMoveShapes(self.selectedShapes, pos)
                 self.repaint()
@@ -314,7 +321,8 @@ class Canvas(QtWidgets.QWidget):
             for i in range(len(self.shapes)):
                 # Look for a nearby vertex to highlight. If that fails,
                 # check if we happen to be inside a shape.
-                if not self.distMap_crit[int(pos.y()), int(pos.x()), i]:
+                if not self.distMap_crit[int(pos.y()), int(pos.x()), i] or\
+                        not self.shapes[i].selected:
                     continue
                 index, closest_vertex = self.shapes[i].nearestVertex(
                     pos,
@@ -370,7 +378,8 @@ class Canvas(QtWidgets.QWidget):
                         ) % self.shapes[i].label
                     )
                     self.setStatusTip(self.toolTip())
-                    self.overrideCursor(CURSOR_GRAB)
+                    if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                        self.overrideCursor(CURSOR_GRAB)
                     self.update()
                     break
             else:  # Nothing found, clear highlights, reset state.
@@ -493,10 +502,11 @@ class Canvas(QtWidgets.QWidget):
                         if self.current.isClosed():
                             self.finalise()
                     elif self.createMode == "trace":
-                        self.mouseDoubleClickEvent(
-                            QtCore.QEvent(QtCore.QEvent.MouseButtonDblClick)
-                        )
-                        self.tracingActive = False
+                        # self.mouseDoubleClickEvent(
+                        #     QtCore.QEvent(QtCore.QEvent.MouseButtonDblClick)
+                        # )
+                        # self.tracingActive = False
+                        pass
                     elif self.createMode in ["rectangle", "circle", "line"]:
                         assert len(self.current.points) == 1
                         self.current.points = self.line.points
@@ -533,6 +543,14 @@ class Canvas(QtWidgets.QWidget):
                     self.removeSelectedPoint()
 
                 group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+                selected_ind = np.argwhere(
+                    np.array(
+                        [s.selected for s in self.shapes]))
+                if selected_ind.size > 0:
+                    if self.distMap_crit[int(pos.y()), int(pos.x()), selected_ind].any():
+                        self.keep_selected = True
+                    else:
+                        self.keep_selected = False
                 self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                 self.prevPoint = pos
                 self.repaint()
@@ -545,16 +563,21 @@ class Canvas(QtWidgets.QWidget):
                 self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                 self.repaint()
             self.prevPoint = pos
+        elif ev.button() == QtCore.Qt.BackButton:
+            self.requestPreviousImage.emit()
+        elif ev.button() == QtCore.Qt.ForwardButton:
+            self.requestNextImage.emit()
+
 
     def mouseReleaseEvent(self, ev: QtGui.QMouseEvent) -> None:
         if ev.button() == QtCore.Qt.LeftButton and\
                 self.current and self.tracingActive:
             if len(self.current.points) > 1:
-                self.mouseDoubleClickEvent(
-                    QtCore.QEvent(QtCore.QEvent.MouseButtonDblClick)
-                )
-                self.tracingActive = False
-
+                # self.mouseDoubleClickEvent(
+                #     QtCore.QEvent(QtCore.QEvent.MouseButtonDblClick)
+                # )
+                # self.tracingActive = False
+                pass
         if ev.button() == QtCore.Qt.RightButton:
             menu = self.menus[len(self.selectedShapesCopy) > 0]
             self.restoreCursor()
@@ -657,7 +680,8 @@ class Canvas(QtWidgets.QWidget):
                         self.hShapeIsSelected = True
                     self.calculateOffsets(point)
                     return
-        self.deSelectShape()
+        if not self.keep_selected:
+            self.deSelectShape()
 
     def calculateOffsets(self, point):
         left = self.pixmap.width() - 1
@@ -987,12 +1011,12 @@ class Canvas(QtWidgets.QWidget):
             pass
             # self.pause_tracing = True
 
-    def keyReleaseEvent(self, ev):
-        key = ev.key()
-        if key == QtCore.Qt.Key_F and self.pause_tracing:
-            self.pause_tracing = False
-        elif key == QtCore.Qt.Key_F and not self.pause_tracing:
-            self.pause_tracing = True
+    # def keyReleaseEvent(self, ev):
+    #     key = ev.key()
+    #     if key == QtCore.Qt.Key_F and self.pause_tracing:
+    #         self.pause_tracing = False
+    #     elif key == QtCore.Qt.Key_F and not self.pause_tracing:
+    #         self.pause_tracing = True
 
     def setLastLabel(self, text, flags):
         assert text
